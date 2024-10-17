@@ -1,0 +1,82 @@
+[x] Cursor not after end of file
+[ ] with cursor down last line should stay at the bottom
+[x] Hide
+[x] help
+[x] c cycle colors
+[x] different color schemes for mark, tagged, search: reverse, colored, underline, bold etc.
+[x] display mode manual tag only
+[ ] display mode solo
+[x] n
+[x] N next when on search
+[x] after search place cursor on result
+[x] ? search backwards
+[x] reduce mark selection? maybe ,.<>? or '>'=extend mark to right, '<' reduce mark
+[ ] undo
+[ ] save state to disk
+[ ] config file
+[x] navigation wWbB (only within line)
+[x] navigation 0$
+[x] status: display mode
+[x] status: position in file
+[x] changing display mode should keep the cursor on the same line or the next displayed one
+[x] regex search: &
+[x] search wrap
+[x] filter bug: when enabling filter while first line is not filtered, it will stay displayed until
+    the next event
+[ ] overlong line is slow
+[ ] collapse overlong line
+[ ] substitute pattern
+[ ] insert blank lines
+[ ] insert comment lines
+[ ] cursor on file/line: key to show source with some context when on file:line
+[ ] d replace timestamps by relative timestamps
+[ ] :w write current display to file
+[ ] tokenizer regex/grammar can be defined per filetype
+[ ] token can have a type: file/line, json, perl struct, rust debug struct
+[ ] pretty-print tokens
+[x] let mark/hide/tag only work on positions with only one pattern? give error otherwise
+[x] allow multiple searches? probably not
+[x] status text: no matches
+[x] status text: search wrapped
+[x] status text: multiple matches under cursor
+[x] status text: terminal too small
+[x] show all search result even in tagged mode
+[x] sane cursor position on exit
+[x] color schemes: don't use background color as foreground color in reverse, because it makes the
+    cursor hard to see
+[ ] load splits in background
+[ ] search bug: extend right on "116", second one matches the pattern
+[ ] state/self aufräumen
+[x] when switching to other display mode and cursor is not moved, switching back should end up on
+    the same line
+[x] calculate marker area for file offset from filelen
+[ ] histogram of line (too slow?)
+[ ] scroll in help/modal or 2 column layout
+[ ] mouse support
+[ ] ?make render incremental, when a split is not yet ready, return a channel to wait on instead
+    (or pass in a channel, whatever is easier)
+    show some progress on long running search? (hard?) while get_split blocks? futures might help?
+    only relevant for very very large files or in debug mode
+[x] move line under cursor also on unmark / tag/untag hide/unhide
+[x] mark on search result: convert search to mark? yes
+[ ] when there is still room on the screen and we are not on the start of the displayable line,
+    scroll up (scroll to top)
+    same: when there are not enough lines to fill the screen, it should scroll up automatically
+    or maybe just scroll a single line if the line above/below display "changed"?
+    or maybe show an empty line on top when on first line? or color first line (in marker area?)?
+[ ] manually untag from a given tag? saved in pattern. only exclude in display
+[ ] error on file changed on disk, exit
+[ ] move cursor away from top/bottom in move_line_under_cursor?
+[ ] 'T' to always manually tag a line, 'X' ditto?
+[x] 'g' does not always go to first line, only to 2nd (seen in tagged mode)
+[ ] display shorter match over longer match
+[x] fiter "nothing to display", don't change mode
+
+
+order: scroll to top, incremental render, search extend bug, shorter match over longer, more colors
+idea: store match number in addition to pattern id for each character
+
+Description:
+you have millions and millions of debug log lines, with the traces of a bug buried in them.
+the goal is to quickly find relevant lines to the problem at hand and to reduce the display to
+only those lines
