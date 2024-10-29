@@ -278,11 +278,11 @@ impl App {
         }
 
         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-            let state = self.state.borrow();
+            let area_height = self.state.borrow().area_height;
             let cnt = match key_event.code {
                 KeyCode::Char('e') => 1,
-                KeyCode::Char('d') => state.area_height / 2,
-                KeyCode::Char('f') => state.area_height,
+                KeyCode::Char('d') => area_height / 2,
+                KeyCode::Char('f') => area_height,
                 _ => 0,
             };
             for _ in 0..cnt {
@@ -293,14 +293,14 @@ impl App {
             }
             let cnt = match key_event.code {
                 KeyCode::Char('y') => 1,
-                KeyCode::Char('u') => state.area_height / 2,
-                KeyCode::Char('b') => state.area_height,
+                KeyCode::Char('u') => area_height / 2,
+                KeyCode::Char('b') => area_height,
                 _ => 0,
             };
             for _ in 0..cnt {
                 let scrolled = self.scroll_up();
                 if cnt == 1 && scrolled &&
-                    self.state.borrow().cursor_y < (state.area_height - 1) as i16
+                    self.state.borrow().cursor_y < (area_height - 1) as i16
                 {
                     self.move_cursor(0, 1);
                 }
@@ -397,37 +397,35 @@ impl App {
         }
     }
 
-    fn adjust_viewport(&self, area: Rect) -> bool {
-        let mut recalc_lines = false;
-        let mut cursor_y = self.state.borrow().cursor_y;
-        while cursor_y < 0 {
-            cursor_y += 1;
-            let scrolled = self.scroll_up();
-            if scrolled {
-                recalc_lines = true;
+    fn move_cursor(&self, dx: i16, mut dy: i16) -> bool {
+        let mut state = self.state.borrow_mut();
+        state.cursor_x = (state.cursor_x + dx).max(0).min(state.area_width as i16 - 1);
+        let mut cursor_y = state.cursor_y;
+        let area_height = state.area_height as i16;
+        drop(state);
+
+        let mut moved = false;
+        while dy > 0 {
+            if cursor_y == area_height as i16 - 1 {
+                moved |= self.scroll_down();
+            } else {
+                cursor_y += 1;
             }
+            dy -= 1;
         }
-        while cursor_y >= area.height as i16 {
-            cursor_y -= 1;
-            let scrolled = self.scroll_down();
-            if scrolled {
-                recalc_lines = true;
+        while dy < 0 {
+            if cursor_y == 0 {
+                moved |= self.scroll_up();
+            } else {
+                cursor_y -= 1;
             }
+            dy += 1;
         }
         let mut state = self.state.borrow_mut();
-
-        state.cursor_x = state.cursor_x.min(area.width as i16 - 1).max(0);
         state.cursor_y = cursor_y;
-
-        recalc_lines
-    }
-
-    fn move_cursor(&self, dx: i16, dy: i16) -> bool {
-        let mut state = self.state.borrow_mut();
-        state.cursor_x += dx;
-        state.cursor_y += dy;
         state.before_filter_pos.clear();
-        false
+
+        moved
     }
 
     fn move_start(&self) -> bool {
@@ -436,10 +434,10 @@ impl App {
         state.cursor_y = 0;
         state.first_line = 0;
         state.line_offset = 0;
+        state.lines.set_current_line(state.first_line);
         if let Some(id) = self.adjust_to_unfiltered_line(&mut state, 0) {
             state.first_line = id;
         }
-        state.lines.set_current_line(state.first_line);
 
         true
     }
@@ -447,6 +445,7 @@ impl App {
     fn move_end(&self) -> bool {
         let mut state = self.state.borrow_mut();
         let mut last_line_id = state.lines.last_line_id();
+        state.lines.set_current_line(state.first_line);
         if let Some(id) = self.adjust_to_unfiltered_line(&mut state, last_line_id) {
             last_line_id = id;
         }
@@ -456,7 +455,6 @@ impl App {
 
         lD3!(MA, "move_end: last_line_id: {}", last_line_id);
         state.first_line = last_line_id;
-        state.lines.set_current_line(state.first_line);
 
         let pline = state.lines.get(last_line_id, &state.patterns).unwrap();
         let parts = self.line_parts(&pline, state.area_width) as usize;
@@ -525,6 +523,20 @@ impl App {
         lD4!(MA, "scroll_down: state.line_offset: {} indexes {:?}",
             state.line_offset, state.line_indexes);
 
+        /*
+         * don't scroll down if the bottom line is the last line
+         */
+        let mode = state.display_mode;
+        let last_line_index = state.line_indexes.last().unwrap();
+        let last_pline = &state.plines[last_line_index.line_ix];
+        let last_parts = self.line_parts(last_pline, state.area_width);
+        lD5!(MA, "scroll_down: last_line_index: {:?} last_parts: {}", last_line_index, last_parts);
+        if last_line_index.line_part == last_parts - 1 && state.lines.next_line(SearchType::Tag,
+            last_pline.line_id, &state.patterns, mode, false).is_none()
+        {
+            return false;
+        }
+
         let Some(index1) = state.line_indexes.get(1) else {
             return false;
         };
@@ -534,13 +546,13 @@ impl App {
         }
         state.line_offset = 0;
 
-        let mode = state.display_mode;
         let first_line = state.first_line;
         let Some(next_line_id) = state.lines.next_line(SearchType::Tag, first_line,
             &state.patterns, mode, false) else
         {
             return false;
         };
+
         state.first_line = next_line_id;
         state.lines.set_current_line(state.first_line);
         return true;
@@ -1367,7 +1379,7 @@ impl Widget for &App {
             recalc_lines |= self.handle_event_after_layout();
         }
 
-        recalc_lines |= self.adjust_viewport(log_area);
+        //recalc_lines |= self.adjust_viewport(log_area);
 
 
         /*
@@ -1449,10 +1461,10 @@ impl Widget for &App {
         state.line_indexes = line_indexes;
 
         /*
-         * adjust cursor position
+         * adjust cursor position if we don't have enough lines
          */
-        while state.cursor_y >= state.line_indexes.len() as i16 {
-            state.cursor_y -= 1;
+        if state.cursor_y >= state.line_indexes.len() as i16 {
+            state.cursor_y = state.cursor_y.min(state.line_indexes.len() as i16 - 1);
             lD5!(MA, "adjusting cursor_y to {}", state.cursor_y);
         }
 
