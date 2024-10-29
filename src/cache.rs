@@ -166,9 +166,6 @@ impl SplitCache {
         let mut search_lines = Vec::new();
         let mut hidden_lines = Vec::new();
         for (i, &end) in split.line_ends.iter().enumerate() {
-            if i == 0 {
-                lI!(CA, "first line: {:?}", &split.buf[start..end-1]);
-            }
             if tagged_re.is_match(&split.buf[start..end-1]) {
                 tagged_lines.push(i);
             }

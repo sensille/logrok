@@ -1379,15 +1379,14 @@ impl Widget for &App {
             recalc_lines |= self.handle_event_after_layout();
         }
 
-        //recalc_lines |= self.adjust_viewport(log_area);
-
-
         /*
          * build lines
          */
         lD5!(MA, "render: recalc_lines: {}", recalc_lines);
-        let mut state = self.state.borrow_mut();
-        if recalc_lines || state.plines.is_empty() {
+        recalc_lines |= self.state.borrow().plines.is_empty();
+        while recalc_lines {
+            let mut state = self.state.borrow_mut();
+            recalc_lines = false;
             let mut state_lines = Vec::new();
             let skip = state.line_offset;
             let mut curr_line_id = state.first_line;
@@ -1415,6 +1414,17 @@ impl Widget for &App {
                 }
             }
             state.plines = state_lines;
+            drop(state);
+
+            while num_lines < log_area.height as usize {
+                let scrolled = self.scroll_up();
+                if scrolled {
+                    num_lines += 1;
+                    recalc_lines = true;
+                } else {
+                    break;
+                }
+            }
         }
 
         /*
@@ -1422,6 +1432,7 @@ impl Widget for &App {
          */
         let mut lines = Vec::new();
         let mut line_indexes = Vec::new();
+        let mut state = self.state.borrow_mut();
         let mut skip = state.line_offset;
         'a: for (i, pline) in state.plines.iter().enumerate() {
             let mut ix = 0;
