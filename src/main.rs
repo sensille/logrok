@@ -269,7 +269,7 @@ impl App {
 
     // events that need the layout. this must not change the layout. It is possible
     // to split an event in both before and after.
-    fn handle_event_after_layout(&self, area: Rect) -> bool {
+    fn handle_event_after_layout(&self) -> bool {
        let Some(Event::Key(key_event)) = self.event else {
             return false;
         };
@@ -278,27 +278,30 @@ impl App {
         }
 
         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+            let state = self.state.borrow();
             let cnt = match key_event.code {
                 KeyCode::Char('e') => 1,
-                KeyCode::Char('d') => area.height / 2,
-                KeyCode::Char('f') => area.height,
+                KeyCode::Char('d') => state.area_height / 2,
+                KeyCode::Char('f') => state.area_height,
                 _ => 0,
             };
             for _ in 0..cnt {
-                let scrolled = self.scroll_down(area);
+                let scrolled = self.scroll_down();
                 if cnt == 1 && scrolled && self.state.borrow().cursor_y > 0 {
                     self.move_cursor(0, -1);
                 }
             }
             let cnt = match key_event.code {
                 KeyCode::Char('y') => 1,
-                KeyCode::Char('u') => area.height / 2,
-                KeyCode::Char('b') => area.height,
+                KeyCode::Char('u') => state.area_height / 2,
+                KeyCode::Char('b') => state.area_height,
                 _ => 0,
             };
             for _ in 0..cnt {
-                let scrolled = self.scroll_up(area);
-                if cnt == 1 && scrolled && self.state.borrow().cursor_y < (area.height - 1) as i16 {
+                let scrolled = self.scroll_up();
+                if cnt == 1 && scrolled &&
+                    self.state.borrow().cursor_y < (state.area_height - 1) as i16
+                {
                     self.move_cursor(0, 1);
                 }
             }
@@ -355,7 +358,7 @@ impl App {
         return false;
     }
 
-    fn handle_search_event_after_layout(&self, _area: Rect) -> bool {
+    fn handle_search_event_after_layout(&self) -> bool {
        lD3!(MA, "search event: {:?}", self.event);
        let Some(Event::Key(key_event)) = self.event else {
             return false;
@@ -399,46 +402,19 @@ impl App {
         let mut cursor_y = self.state.borrow().cursor_y;
         while cursor_y < 0 {
             cursor_y += 1;
-            let scrolled = self.scroll_up(area);
+            let scrolled = self.scroll_up();
             if scrolled {
                 recalc_lines = true;
             }
         }
         while cursor_y >= area.height as i16 {
             cursor_y -= 1;
-            let scrolled = self.scroll_down(area);
+            let scrolled = self.scroll_down();
             if scrolled {
                 recalc_lines = true;
             }
         }
         let mut state = self.state.borrow_mut();
-
-        /*
-        // if the current line is filtered, move to the next/previous line
-        // XXX maybe it can already be part of turning filter on/off. why is it still needed?
-        let mode = state.display_mode;
-        match state.lines.is_filtered_line(state.first_line, mode, &state.patterns) {
-            Some(true) => {
-                lD3!(MA, "adjust_viewport: current {} line is filtered", state.first_line);
-                if let Some(next_line_id) = state.lines.next_line(SearchType::Tag,
-                    state.first_line, &state.patterns, mode, false)
-                {
-                    state.first_line = next_line_id;
-                    state.lines.set_current_line(state.first_line);
-                    recalc_lines = true;
-                    lD3!(MA, "adjust_viewport: move to next line {}", next_line_id);
-                } else if let Some(prev_line_id) = state.lines.prev_line(SearchType::Tag,
-                    state.first_line, &state.patterns, mode, false)
-                {
-                    state.first_line = prev_line_id;
-                    state.lines.set_current_line(state.first_line);
-                    recalc_lines = true;
-                    lD3!(MA, "adjust_viewport: move to prev line {}", prev_line_id);
-                }
-            }
-            _ => (),
-        }
-        */
 
         state.cursor_x = state.cursor_x.min(area.width as i16 - 1).max(0);
         state.cursor_y = cursor_y;
@@ -544,7 +520,7 @@ impl App {
         false
     }
 
-    fn scroll_down(&self, _area: Rect) -> bool {
+    fn scroll_down(&self) -> bool {
         let mut state = self.state.borrow_mut();
         lD4!(MA, "scroll_down: state.line_offset: {} indexes {:?}",
             state.line_offset, state.line_indexes);
@@ -570,7 +546,7 @@ impl App {
         return true;
     }
 
-    fn scroll_up(&self, area: Rect) -> bool {
+    fn scroll_up(&self) -> bool {
         let mut state = self.state.borrow_mut();
         lD4!(MA, "scroll_up: state.line_offset: {} indexes {:?}",
             state.line_offset, state.line_indexes);
@@ -592,9 +568,9 @@ impl App {
 
         let pline = state.lines.get(line_id, &state.patterns).unwrap();
         let linelen = pline.chars.len() as u16;
-        if linelen > area.width {
-            state.line_offset = (linelen - area.width) as usize /
-                (area.width as usize - self.indent_chars as usize) + 1;
+        if linelen > state.area_width {
+            state.line_offset = (linelen - state.area_width) as usize /
+                (state.area_width as usize - self.indent_chars as usize) + 1;
         }
         return true;
     }
@@ -1386,9 +1362,9 @@ impl Widget for &App {
          * Handle key events part 2
          */
         if self.state.borrow().in_search_input {
-            recalc_lines |= self.handle_search_event_after_layout(log_area);
+            recalc_lines |= self.handle_search_event_after_layout();
         } else {
-            recalc_lines |= self.handle_event_after_layout(log_area);
+            recalc_lines |= self.handle_event_after_layout();
         }
 
         recalc_lines |= self.adjust_viewport(log_area);

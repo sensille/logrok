@@ -24,7 +24,8 @@
 [x] filter bug: when enabling filter while first line is not filtered, it will stay displayed until
     the next event
 [ ] overlong line is slow
-[ ] collapse overlong line
+[ ] always collapse overlong lines. 'o' to switch to scrolling within line. expand/shrink.
+    search results scroll to the first match, tag/mark ditto
 [ ] substitute pattern
 [ ] insert blank lines
 [ ] insert comment lines
@@ -73,7 +74,8 @@
 [x] fiter "nothing to display", don't change mode
 
 
-order: scroll to top, incremental render, search extend bug, shorter match over longer, more colors
+order: scroll to top, incremental render, search extend bug, shorter match over longer, more colors,
+    undo
 idea: store match number in addition to pattern id for each character
 
 Description:
