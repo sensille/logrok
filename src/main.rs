@@ -701,7 +701,7 @@ impl App {
                         state.status_message = Some("ambiguous selection".to_string());
                         return false;
                     }
-                    let id = matches[0];
+                    let (id, _) = matches[0];
                     let mode = state.patterns.get(id).mode;
                     let (new_mode, new_variant) = if mode == PatternMode::Marking {
                         if patmode == PatternMode::Tagging {
@@ -762,7 +762,7 @@ impl App {
         if let Some(ref matches) = state.plines[line_ix].chars[pos].matches {
             let matches = matches.clone();
             // only act on last match
-            if let Some(&id) = matches.last() {
+            if let Some(&(id, _)) = matches.last() {
                 // convert search to mark
                 if state.patterns.get(id).mode == PatternMode::Search {
                     // give it a new color
@@ -829,7 +829,7 @@ impl App {
                 // we don't know what to do when the char has multiple matches
                 return false;
             }
-            let id = matches[0];
+            let (id, _) = matches[0];
             state.patterns.with(id, |p| {
                 if direction == Direction::Forward {
                     p.style.cycle_forward();
@@ -859,11 +859,12 @@ impl App {
                 // we don't know what to do when the char has multiple matches
                 return false;
             }
-            let id = matches[0];
+            let idm = matches[0];
+            let (id, _) = idm;
             loop {
                 if extend {
                     if pline.chars[pos].matches.is_some() &&
-                       pline.chars[pos].matches.as_ref().unwrap().contains(&id)
+                       pline.chars[pos].matches.as_ref().unwrap().contains(&idm)
                     {
                         if direction == Direction::Forward {
                             if pos == pline.chars.len() - 1 {
@@ -1069,8 +1070,33 @@ impl App {
         -> bool
     {
         if let Some(ref matches) = pline.chars[pos].matches {
-            for &id in matches {
+            for &(id, _) in matches {
                 if state.patterns.get(id).mode == mode {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn match_get_search_ix(&self, state: &State, pline: &ProcessedLine, pos: usize) -> Option<usize>
+    {
+        if let Some(ref matches) = pline.chars[pos].matches {
+            for &(id, ix) in matches {
+                if state.patterns.get(id).mode == PatternMode::Search {
+                    return Some(ix);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn match_has_search_ix(&self, pline: &ProcessedLine, pos: usize, wanted_ix: usize) -> bool {
+        if let Some(ref matches) = pline.chars[pos].matches {
+            for &(_, ix) in matches {
+                if ix == wanted_ix {
                     return true;
                 }
             }
@@ -1081,18 +1107,23 @@ impl App {
 
     // return the start position of the search match, if any
     fn get_search_match_forward(&self, state: &State, pline: &ProcessedLine, pos: usize,
-        mut skip_current: bool) -> Option<usize>
+        skip_current: bool) -> Option<usize>
     {
-        // XXX could be improved in case we have back-to-back matches. Use re matches instead
-        // or store match number besides pattern
         let mut pos = pos;
-        while pos < pline.chars.len() {
-            if self.match_has_mode(state, pline, pos, PatternMode::Search) {
-                if !skip_current {
-                    return Some(pos);
+        if skip_current {
+            let ix = self.match_get_search_ix(state, pline, pos);
+            if let Some(ix) = ix {
+                while pos < pline.chars.len() {
+                    if !self.match_has_search_ix(pline, pos, ix) {
+                        break;
+                    }
+                    pos += 1;
                 }
-            } else {
-                skip_current = false;
+            }
+        };
+        while pos < pline.chars.len() {
+            if self.match_has_mode(&state, pline, pos, PatternMode::Search) {
+                return Some(pos);
             }
             pos += 1;
         }
@@ -1101,22 +1132,30 @@ impl App {
 
     // return the start position of the search match, if any
     fn get_search_match_backward(&self, state: &State, pline: &ProcessedLine, pos: usize,
-        mut skip_current: bool) -> Option<usize>
+        skip_current: bool) -> Option<usize>
     {
         let mut pos = pos as isize;
+        if skip_current {
+            let ix = self.match_get_search_ix(state, pline, pos as usize);
+            if let Some(ix) = ix {
+                while pos >= 0 {
+                    if !self.match_has_search_ix(pline, pos as usize, ix) {
+                        break;
+                    }
+                    pos -= 1;
+                }
+            }
+        };
         while pos >= 0 {
             if self.match_has_mode(state, pline, pos as usize, PatternMode::Search) {
-                if !skip_current {
-                    // found a match, now find the start of the match
-                    while pos > 0 && self.match_has_mode(state, pline, pos as usize - 1,
-                        PatternMode::Search)
-                    {
-                        pos -= 1;
-                    }
-                    return Some(pos as usize);
+                // found a match, now find the start of the match
+                let Some(ix) = self.match_get_search_ix(state, pline, pos as usize) else {
+                    return None;
+                };
+                while pos > 0 && self.match_has_search_ix(pline, pos as usize - 1, ix) {
+                    pos -= 1;
                 }
-            } else {
-                skip_current = false;
+                return Some(pos as usize);
             }
             pos -= 1;
         }
@@ -1793,6 +1832,9 @@ struct Cli {
     #[arg(short='l', long)]
     log: Vec<String>,
 
+    #[arg(short='o', long)]
+    output: Option<String>,
+
     #[arg(trailing_var_arg = true, allow_hyphen_values = false, hide = true)]
     files: Vec<String>,
 }
@@ -1803,8 +1845,14 @@ fn main() -> Result<()> {
         return Err(anyhow::anyhow!("Expected exactly one file"));
     }
 
-    CLog::init_modules("uss", log::LOG_KEYS, Level::Info, FacadeVariant::StdErr,
-        Some(Options::default() - FUNC + TID)).unwrap();
+    let mut facade = None;
+    let mut level = None;
+    if let Some(o) = &cli.output {
+        let logfile: &'static str = o.to_string().leak();
+        level = Some(Level::Info);
+        facade = Some(FacadeVariant::LogFile(logfile));
+    }
+    log::LogKeys::clog_init("logrok", level, facade, Some(Options::default() - FUNC + TID))?;
 
     let v: Vec<&str> = cli.log.iter().map(|s| &**s).collect();
     CLog::set_mod_level(v)?;

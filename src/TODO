@@ -1,5 +1,5 @@
 [x] Cursor not after end of file
-[ ] with cursor down last line should stay at the bottom
+[x] with cursor down last line should stay at the bottom
 [x] Hide
 [x] help
 [x] c cycle colors
@@ -46,7 +46,8 @@
 [x] color schemes: don't use background color as foreground color in reverse, because it makes the
     cursor hard to see
 [ ] load splits in background
-[ ] search bug: extend right on "116", second one matches the pattern
+[x] match bug: extend right on "116", second one matches the pattern
+[x] search bug: next skips next match if it is back-to-back, eg '00' in '000000000'
 [ ] state/self aufräumen
 [x] when switching to other display mode and cursor is not moved, switching back should end up on
     the same line
@@ -58,6 +59,8 @@
     (or pass in a channel, whatever is easier)
     show some progress on long running search? (hard?) while get_split blocks? futures might help?
     only relevant for very very large files or in debug mode
+    idea: handle key events outside of render. get terminal size from resize events and initially.
+    move calc_layout to function, call in render and in handle event
 [x] move line under cursor also on unmark / tag/untag hide/unhide
 [x] mark on search result: convert search to mark? yes
 [x] when there is still room on the screen and we are not on the start of the displayable line,
@@ -68,16 +71,16 @@
 [ ] manually untag from a given tag? saved in pattern. only exclude in display
 [ ] error on file changed on disk, exit
 [ ] move cursor away from top/bottom in move_line_under_cursor?
-[ ] 'T' to always manually tag a line, 'X' ditto?
+[X] 'T' to always manually tag a line, 'X' ditto?
 [x] 'g' does not always go to first line, only to 2nd (seen in tagged mode)
-[ ] display shorter match over longer match
+[x] display shorter match over longer match
 [x] fiter "nothing to display", don't change mode
+[x] clog to file
 
 
-order: incremental render, search extend bug, shorter match over longer, more colors, undo
-idea: store match number in addition to pattern id for each character
+order: incremental render, more colors, undo
 
 Description:
 you have millions and millions of debug log lines, with the traces of a bug buried in them.
 the goal is to quickly find relevant lines to the problem at hand and to reduce the display to
-only those lines
+only those lines while highlighting relevant items.

@@ -10,7 +10,7 @@ pub type PatternId = usize;
 #[derive(Debug, Clone)]
 pub struct StyledChar {
     pub c: char,
-    pub matches: Option<Vec<PatternId>>, // Option to avoid allocations
+    pub matches: Option<Vec<(PatternId, usize)>>, // Option to avoid allocations, (id, pos in match)
     pub style: MarkStyle,
 }
 
@@ -74,6 +74,7 @@ pub struct Pattern {
 pub struct PatternSet {
     pub default_style: MarkStyle,
     patterns: BTreeMap<PatternId, Pattern>,
+    sort_by_len: Vec<PatternId>,
     pub seq: PatternId,
     pub tagged_re: RegexSet,
     pub search_re: RegexSet,
@@ -88,6 +89,7 @@ impl PatternSet {
             search_re: RegexSet::new(&[""; 0]).unwrap(),
             hidden_re: RegexSet::new(&[""; 0]).unwrap(),
             seq: 1,
+            sort_by_len: Vec::new(),
             default_style,
         }
     }
@@ -110,6 +112,13 @@ impl PatternSet {
             .filter(|p| p.mode == PatternMode::Hiding)
             .map(|p| p.match_type.build_re(&p.pattern));
         self.hidden_re = RegexSet::new(hidden_patterns).unwrap();
+
+        let mut lengths = self.patterns.iter()
+            .map(|(id, p)| (id, p.pattern.len()))
+            .collect::<Vec<_>>();
+        lengths.sort_by_key(|&(_, len)| len);
+        self.sort_by_len = lengths.iter().rev().map(|&(id, _)| *id).collect::<Vec<_>>();
+
     }
 
     pub fn add(&mut self, pattern: &str, match_type: MatchType, style: MarkStyle,
@@ -126,7 +135,6 @@ impl PatternSet {
         };
         self.patterns.insert(id, pat);
         self.rebuild_re();
-
         id
     }
 
@@ -183,18 +191,21 @@ impl PatternSet {
         if pline.last().map(|c| c.c) == Some('\n') {
             pline.pop();
         }
-        for (&id, pattern) in self.patterns.iter() {
+        let mut match_num = 0;
+        for &id in &self.sort_by_len {
+            let pattern = self.get(id);
             for c in pattern.re.captures_iter(line) {
                 let m = c.get(1).unwrap();
                 for i in m.start() .. m.end() {
                     pline[i].style = pattern.style.clone();
                     if let Some(ref mut matches) = pline[i].matches {
-                        matches.push(id);
+                        matches.push((id, i));
                     } else {
-                        pline[i].matches = Some(vec![id]);
+                        pline[i].matches = Some(vec![(id, match_num)]);
                     }
                     matches.insert(id);
                 }
+                match_num += 1;
             }
         }
 

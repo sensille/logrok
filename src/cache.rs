@@ -196,15 +196,21 @@ impl SplitCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MarkStyle;
+    use crate::MarkType;
 
     #[test]
     fn test_split_cache() {
         let filename = OsStr::new("/home/arne/logrok/tr");
-        let mut ps = PatternSet::new();
+        let mark_style = MarkStyle::new();
+        let mut ps = PatternSet::new(mark_style.clone());
 
-        ps.add("striped-8", MatchType::SmallWord, 0, PatternMode::Tagging);
-        ps.add("allocd-12", MatchType::SmallWord, 0, PatternMode::Hiding);
-        ps.add("baz", MatchType::SmallWord, 0, PatternMode::Marking);
+        ps.add("striped-8", MatchType::SmallWord, mark_style.get(MarkType::Mark),
+            PatternMode::Tagging);
+        ps.add("allocd-12", MatchType::SmallWord, mark_style.get(MarkType::Mark),
+            PatternMode::Hiding);
+        ps.add("baz", MatchType::SmallWord, mark_style.get(MarkType::Mark),
+            PatternMode::Marking);
 
         let sc = SplitCache::new(filename, NonZeroUsize::new(100).unwrap()).unwrap();
         let split = sc.get(0, &ps).unwrap();
