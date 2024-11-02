@@ -272,6 +272,20 @@ impl FileSearch {
             return Some((0, inner.split_ids[0]));
         }
     }
+
+    pub fn get_progress(&self) -> f32 {
+        let inner = self.inner.0.lock().unwrap();
+        let mut dirty = 0;
+        let mut total = 0;
+        for re in &inner.re_states {
+            dirty = dirty.max(re.split_dirty.count_ones());
+            total = total.max(re.split_dirty.len());
+        }
+        if total == 0 {
+            return 1.0;
+        }
+        (total - dirty) as f32 / total as f32
+    }
 }
 
 fn split_file(name: &OsStr, chunk_size: u64) -> std::io::Result<Vec<LineId>> {

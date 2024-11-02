@@ -1622,7 +1622,6 @@ impl Logrok {
         let (tx_req, rx_req) = std::sync::mpsc::channel();
         let (tx_rsp, rx_rsp) = std::sync::mpsc::channel();
         let s = self.clone();
-        let progress = Progress::new();
         let jh = std::thread::spawn(move || {
             loop {
                 let Ok((event, area)) = rx_req.recv() else {
@@ -1634,6 +1633,7 @@ impl Logrok {
             }
         });
         let mut inner = self.inner.lock().unwrap();
+        let filesearch = inner.lines.get_file_search();
         inner.process_event(Self::area(terminal)?, None);
         while !inner.exit {
             let input_area = inner.input_area; // XXX progress hack
@@ -1646,7 +1646,8 @@ impl Logrok {
             loop {
                 match rx_rsp.recv_timeout(std::time::Duration::from_millis(200)) {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        progress.draw(input_area, terminal)?;
+                        let progress = filesearch.get_progress();
+                        draw_progress(progress, input_area, terminal)?;
                         need_restore = true;
                     },
                     Err(e) => return Err(e.into()),
@@ -1655,7 +1656,7 @@ impl Logrok {
             }
             inner = self.inner.lock().unwrap();
             if need_restore {
-                progress.restore(terminal, input_area, &inner.input_content)?;
+                restore_progress(terminal, input_area, &inner.input_content)?;
             }
             if inner.exit {
                 break;
@@ -1695,55 +1696,44 @@ impl Widget for &Logrok {
     }
 }
 
-struct Progress {
+fn draw_progress(progress: f32, area: Rect, terminal: &mut DefaultTerminal) -> Result<()> {
+    terminal.hide_cursor()?;
+    let b = terminal.backend_mut();
+    let message = format!("Processing... {:.2}%", progress * 100.0);
+    let mut spans = Vec::new();
+        spans.push(Span::raw(message).blue().bold());
+    let input = Line::from(spans);
 
+    let fake_area = Rect::new(0, 0, area.width, 1);
+    let mut fake_buf = Buffer::empty(fake_area);
+    Paragraph::new(input)
+        .style(Style::default().fg(Color::Black).bg(Color::Gray))
+        .alignment(Alignment::Left)
+        .render(fake_area, &mut fake_buf);
+
+    let mut content = Vec::new();
+    for x in 0..area.width {
+        let cell = fake_buf.cell((fake_area.x + x, fake_area.y)).unwrap().clone();
+        content.push((area.x + x, area.y, cell));
+    }
+    b.draw(content.iter().map(|(x, y, c)| (*x, *y, c)))?;
+    ratatui::backend::Backend::flush(b)?;
+
+    Ok(())
 }
 
-impl Progress {
-    fn new() -> Self {
-        Self {}
+fn restore_progress(terminal: &mut DefaultTerminal, area: Rect, contents: &Vec<Cell>) -> Result<()>
+{
+    let b = terminal.backend_mut();
+    let mut cont = Vec::new();
+    for x in 0..area.width {
+        cont.push((area.x + x, area.y, &contents[x as usize]));
     }
+    b.draw(cont.into_iter())?;
+    ratatui::backend::Backend::flush(b)?;
+    terminal.show_cursor()?;
 
-    fn draw(&self, area: Rect, terminal: &mut DefaultTerminal) -> Result<()> {
-        terminal.hide_cursor()?;
-        let b = terminal.backend_mut();
-        let message = "Processing...";
-        let mut spans = Vec::new();
-            spans.push(Span::raw(message).blue().bold());
-        let input = Line::from(spans);
-
-        let fake_area = Rect::new(0, 0, area.width, 1);
-        let mut fake_buf = Buffer::empty(fake_area);
-        Paragraph::new(input)
-            .style(Style::default().fg(Color::Black).bg(Color::Gray))
-            .alignment(Alignment::Left)
-            .render(fake_area, &mut fake_buf);
-
-        let mut content = Vec::new();
-        for x in 0..area.width {
-            let cell = fake_buf.cell((fake_area.x + x, fake_area.y)).unwrap().clone();
-            content.push((area.x + x, area.y, cell));
-        }
-        b.draw(content.iter().map(|(x, y, c)| (*x, *y, c)))?;
-        ratatui::backend::Backend::flush(b)?;
-
-        Ok(())
-    }
-
-    fn restore(&self, terminal: &mut DefaultTerminal, area: Rect, contents: &Vec<Cell>)
-        -> Result<()>
-    {
-        let b = terminal.backend_mut();
-        let mut cont = Vec::new();
-        for x in 0..area.width {
-            cont.push((area.x + x, area.y, &contents[x as usize]));
-        }
-        b.draw(cont.into_iter())?;
-        ratatui::backend::Backend::flush(b)?;
-        terminal.show_cursor()?;
-
-        Ok(())
-    }
+    Ok(())
 }
 
 #[derive(Debug)]

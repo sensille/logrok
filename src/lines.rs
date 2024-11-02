@@ -343,4 +343,8 @@ impl Lines {
         let split_id = self.split_cache.find_split(line_id).unwrap();
         self.split_cache.set_current_split(split_id);
     }
+
+    pub fn get_file_search(&self) -> FileSearch {
+        self.split_cache.get_file_search()
+    }
 }

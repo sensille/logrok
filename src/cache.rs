@@ -78,6 +78,11 @@ impl SplitCache {
         inner.file_search.get_split(split)
     }
 
+    pub fn get_file_search(&self) -> FileSearch {
+        let inner = self.inner.borrow();
+        inner.file_search.clone()
+    }
+
     pub fn set_re(&self, st: SearchType, patterns: &PatternSet) {
         let mut inner = self.inner.borrow_mut();
         match st {
