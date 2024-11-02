@@ -11,14 +11,14 @@ use ratatui::{
     widgets::{Paragraph, Widget, Block, Clear, Padding},
     DefaultTerminal, Frame,
 };
-use std::cell::RefCell;
 use std::collections::HashMap;
 use clog::prelude::*;
 use std::panic;
 use std::process;
 use std::io::Write;
 use std::ffi::OsString;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::fmt::{self, Debug, Formatter};
 
 use crate::log::LogKeys::MA;
@@ -44,7 +44,7 @@ struct MarkStyleSet {
 pub struct MarkStyle {
     variant: MarkType,
     index: isize,
-    styles: Rc<Vec<MarkStyleSet>>,
+    styles: Arc<Vec<MarkStyleSet>>,
 }
 
 impl Debug for MarkStyle {
@@ -113,7 +113,7 @@ impl MarkStyle {
         MarkStyle {
             index: 0,
             variant: MarkType::None,
-            styles: Rc::new(mark_styles),
+            styles: Arc::new(mark_styles),
         }
     }
 }
@@ -134,7 +134,7 @@ enum Direction {
 }
 
 #[derive(Debug)]
-struct State {
+struct LogrokInner {
     cursor_x: i16,
     cursor_y: i16,
     // kept for reference as how the cursor is calculated, needed for resize
@@ -157,12 +157,28 @@ struct State {
     before_filter_pos: HashMap<usize, (LineId, usize, i16)>,
     display_help: bool,
     status_message: Option<String>,
+    render_cursor: (u16, u16),
+    indent: String,
+    indent_chars: u16,
+    help: Help,
     // the fields below are rebuilt on each render
     plines: Vec<ProcessedLine>,
     line_indexes: Vec<LineIndex>,
 }
 
-impl State {
+#[derive(Debug, Clone)]
+struct Logrok {
+    inner: Arc<Mutex<LogrokInner>>,
+}
+
+#[derive(Debug)]
+struct LineIndex {
+    line_ix: usize,  // index into the lines vector
+    char_index: usize,
+    line_part: usize,
+}
+
+impl LogrokInner {
     fn update_patterns(&mut self, mode: PatternMode) {
         match mode {
             PatternMode::Tagging => self.lines.update_patterns(SearchType::Tag, &self.patterns),
@@ -186,62 +202,9 @@ impl State {
         self.patterns.remove(id);
         self.update_patterns(mode);
     }
-}
-
-#[derive(Debug)]
-struct LineIndex {
-    line_ix: usize,  // index into the lines vector
-    char_index: usize,
-    line_part: usize,
-}
-
-#[derive(Debug)]
-struct App {
-    state: RefCell<State>,
-    render_cursor: RefCell<(u16, u16)>,
-    indent: String,
-    indent_chars: u16,
-    help: Help,
-}
-
-impl App {
-    pub fn area(terminal: &DefaultTerminal) -> Result<Rect> {
-        let size = terminal.size()?;
-        Ok(Rect::new(0, 0, size.width, size.height))
-    }
-
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        self.process_event(Self::area(terminal)?, None);
-        while !self.state.borrow().exit {
-            terminal.draw(|frame| self.draw(frame))?;
-            let event = self.poll_events()?;
-            self.process_event(Self::area(terminal)?, Some(event));
-        }
-        Ok(())
-    }
-
-    fn draw(&self, frame: &mut Frame) {
-        frame.render_widget(self, frame.area());
-        frame.set_cursor_position((self.render_cursor.borrow().0 , self.render_cursor.borrow().1));
-    }
-
-    fn poll_events(&mut self) -> io::Result<Event> {
-        let event = loop {
-            let event = event::read()?;
-            lD1!(MA, "event: {:?}", event);
-            match event {
-                // it's important to check that the event is a key press event as
-                // crossterm also emits key release and repeat events on Windows.
-                Event::Key(_) |
-                Event::Resize(_, _) => break event,
-                _ => (),
-            };
-        };
-        Ok(event)
-    }
 
     // events that don't need the layout or may change the layout
-    fn handle_event_before_layout(&self, event: &Option<Event>) -> bool {
+    fn handle_event_before_layout(&mut self, event: &Option<Event>) -> bool {
        if let Some(Event::Resize(_, _)) = event {
             return true;
         }
@@ -268,7 +231,7 @@ impl App {
 
     // events that need the layout. this must not change the layout. It is possible
     // to split an event in both before and after.
-    fn handle_event_after_layout(&self, event: &Option<Event>) -> bool {
+    fn handle_event_after_layout(&mut self, event: &Option<Event>) -> bool {
        let Some(Event::Key(key_event)) = event else {
             return false;
         };
@@ -277,7 +240,7 @@ impl App {
         }
 
         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-            let area_height = self.state.borrow().area_height;
+            let area_height = self.area_height;
             let cnt = match key_event.code {
                 KeyCode::Char('e') => 1,
                 KeyCode::Char('d') => area_height / 2,
@@ -286,7 +249,7 @@ impl App {
             };
             for _ in 0..cnt {
                 let scrolled = self.scroll_down();
-                if cnt == 1 && scrolled && self.state.borrow().cursor_y > 0 {
+                if cnt == 1 && scrolled && self.cursor_y > 0 {
                     self.move_cursor(0, -1);
                 }
             }
@@ -299,7 +262,7 @@ impl App {
             for _ in 0..cnt {
                 let scrolled = self.scroll_up();
                 if cnt == 1 && scrolled &&
-                    self.state.borrow().cursor_y < (area_height - 1) as i16
+                    self.cursor_y < (area_height - 1) as i16
                 {
                     self.move_cursor(0, 1);
                 }
@@ -352,11 +315,11 @@ impl App {
         }
     }
 
-    fn handle_search_event_before_layout(&self, _event: &Option<Event>) -> bool {
+    fn handle_search_event_before_layout(&mut self, _event: &Option<Event>) -> bool {
         return false;
     }
 
-    fn handle_search_event_after_layout(&self, event: &Option<Event>) -> bool {
+    fn handle_search_event_after_layout(&mut self, event: &Option<Event>) -> bool {
        lD3!(MA, "search event: {:?}", event);
        let Some(Event::Key(key_event)) = event else {
             return false;
@@ -369,25 +332,23 @@ impl App {
             return false;
         }
 
-        let mut state = self.state.borrow_mut();
         match key_event.code {
             KeyCode::Char(c) => {
-                state.current_search.push(c);
+                self.current_search.push(c);
                 false
             }
             KeyCode::Backspace => {
-                if state.current_search.is_empty() {
-                    state.in_search_input = false;
+                if self.current_search.is_empty() {
+                    self.in_search_input = false;
                     return true;
                 }
-                state.current_search.pop();
+                self.current_search.pop();
                 false
             }
             KeyCode::Enter => {
-                state.in_search_input = false;
-                let input = state.current_search.clone();
-                state.current_search.clear();
-                drop(state);
+                self.in_search_input = false;
+                let input = self.current_search.clone();
+                self.current_search.clear();
                 self.do_search(input);
                 true
             }
@@ -395,12 +356,10 @@ impl App {
         }
     }
 
-    fn move_cursor(&self, dx: i16, mut dy: i16) -> bool {
-        let mut state = self.state.borrow_mut();
-        state.cursor_x = (state.cursor_x + dx).max(0).min(state.area_width as i16 - 1);
-        let mut cursor_y = state.cursor_y;
-        let area_height = state.area_height as i16;
-        drop(state);
+    fn move_cursor(&mut self, dx: i16, mut dy: i16) -> bool {
+        self.cursor_x = (self.cursor_x + dx).max(0).min(self.area_width as i16 - 1);
+        let mut cursor_y = self.cursor_y;
+        let area_height = self.area_height as i16;
 
         let mut moved = false;
         while dy > 0 {
@@ -419,69 +378,65 @@ impl App {
             }
             dy += 1;
         }
-        let mut state = self.state.borrow_mut();
-        state.cursor_y = cursor_y;
-        state.before_filter_pos.clear();
+        self.cursor_y = cursor_y;
+        self.before_filter_pos.clear();
 
         moved
     }
 
-    fn move_start(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        state.cursor_x = 0;
-        state.cursor_y = 0;
-        state.first_line = 0;
-        state.line_offset = 0;
-        state.lines.set_current_line(state.first_line);
-        if let Some(id) = self.adjust_to_unfiltered_line(&mut state, 0) {
-            state.first_line = id;
+    fn move_start(&mut self) -> bool {
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.first_line = 0;
+        self.line_offset = 0;
+        self.lines.set_current_line(self.first_line);
+        if let Some(id) = self.adjust_to_unfiltered_line(0) {
+            self.first_line = id;
         }
 
         true
     }
 
-    fn move_end(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        let mut last_line_id = state.lines.last_line_id();
-        state.lines.set_current_line(state.first_line);
-        if let Some(id) = self.adjust_to_unfiltered_line(&mut state, last_line_id) {
+    fn move_end(&mut self) -> bool {
+        let mut last_line_id = self.lines.last_line_id();
+        self.lines.set_current_line(self.first_line);
+        if let Some(id) = self.adjust_to_unfiltered_line(last_line_id) {
             last_line_id = id;
         }
 
-        state.cursor_x = 0;
-        state.cursor_y = state.area_height as i16 - 1;
+        self.cursor_x = 0;
+        self.cursor_y = self.area_height as i16 - 1;
 
         lD3!(MA, "move_end: last_line_id: {}", last_line_id);
-        state.first_line = last_line_id;
+        self.first_line = last_line_id;
 
-        let pline = state.lines.get(last_line_id, &state.patterns).unwrap();
-        let parts = self.line_parts(&pline, state.area_width) as usize;
-        self.move_line_under_cursor(&mut state, last_line_id, parts - 1);
+        let pline = self.lines.get(last_line_id, &self.patterns).unwrap();
+        let parts = self.line_parts(&pline, self.area_width) as usize;
+        self.move_line_under_cursor(last_line_id, parts - 1);
 
         true
     }
 
-    fn move_word(&self, match_type: MatchType, direction: Direction) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((pos, line_ix, line_part)) = self.resolve_cursor_position(&mut state) else {
+    fn move_word(&mut self, match_type: MatchType, direction: Direction) -> bool {
+        let Some((pos, line_ix, line_part)) = self.resolve_cursor_position() else {
             return false;
         };
-        let pline = &state.plines[line_ix];
+        let pline = &self.plines[line_ix];
         let linelen = pline.chars.len();
         let mut pos = if let Some(pos) = pos {
             pos
         } else {
-            let parts = self.line_parts(pline, state.area_width) as usize;
+            let parts = self.line_parts(pline, self.area_width) as usize;
             // set pos to non-indent part of the line
-            if line_part == parts - 1 && state.cursor_x >= self.indent_chars as i16 {
+            if line_part == parts - 1 && self.cursor_x >= self.indent_chars as i16 {
                 if direction == Direction::Forward {
                     return false;
                 }
                 linelen - 1
             } else {
-                assert!(state.cursor_x < self.indent_chars as i16);
-                state.area_width as usize +
-                    (line_part - 1) * (state.area_width as usize - self.indent_chars as usize)
+                assert!(self.cursor_x < self.indent_chars as i16);
+                self.area_width as usize +
+                    (line_part - 1) * (self.area_width as usize - self.indent_chars as usize)
             }
         };
         lD5!(MA, "move_word: pos: {} line_ix: {} line_part: {}", pos, line_ix, line_part);
@@ -504,108 +459,104 @@ impl App {
         }
         lD5!(MA, "move_word: new pos: {}", pos);
 
-        let (x, y) = self.cursor_from_pos_ix(&state, pos, line_ix, state.area_width);
-        state.cursor_x = x as i16;
-        state.cursor_y = y as i16;
+        let (x, y) = self.cursor_from_pos_ix(pos, line_ix, self.area_width);
+        self.cursor_x = x as i16;
+        self.cursor_y = y as i16;
 
         false
     }
 
-    fn exit(&self) -> bool {
-        self.state.borrow_mut().exit = true;
+    fn exit(&mut self) -> bool {
+        self.exit = true;
         false
     }
 
-    fn scroll_down(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        lD4!(MA, "scroll_down: state.line_offset: {} indexes {:?}",
-            state.line_offset, state.line_indexes);
+    fn scroll_down(&mut self) -> bool {
+        lD4!(MA, "scroll_down: self.line_offset: {} indexes {:?}",
+            self.line_offset, self.line_indexes);
 
         /*
          * don't scroll down if the bottom line is the last line
          */
-        let mode = state.display_mode;
-        let last_line_index = state.line_indexes.last().unwrap();
-        let last_pline = &state.plines[last_line_index.line_ix];
-        let last_parts = self.line_parts(last_pline, state.area_width);
+        let mode = self.display_mode;
+        let last_line_index = self.line_indexes.last().unwrap();
+        let last_pline = &self.plines[last_line_index.line_ix];
+        let last_parts = self.line_parts(last_pline, self.area_width);
         lD5!(MA, "scroll_down: last_line_index: {:?} last_parts: {}", last_line_index, last_parts);
-        if last_line_index.line_part == last_parts - 1 && state.lines.next_line(SearchType::Tag,
-            last_pline.line_id, &state.patterns, mode, false).is_none()
+        if last_line_index.line_part == last_parts - 1 && self.lines.next_line(SearchType::Tag,
+            last_pline.line_id, &self.patterns, mode, false).is_none()
         {
             return false;
         }
 
-        let Some(index1) = state.line_indexes.get(1) else {
+        let Some(index1) = self.line_indexes.get(1) else {
             return false;
         };
-        if index1.line_part > 0 && state.line_offset < index1.line_part {
-            state.line_offset += 1;
+        if index1.line_part > 0 && self.line_offset < index1.line_part {
+            self.line_offset += 1;
             return true;
         }
-        state.line_offset = 0;
+        self.line_offset = 0;
 
-        let first_line = state.first_line;
-        let Some(next_line_id) = state.lines.next_line(SearchType::Tag, first_line,
-            &state.patterns, mode, false) else
+        let first_line = self.first_line;
+        let Some(next_line_id) = self.lines.next_line(SearchType::Tag, first_line,
+            &self.patterns, mode, false) else
         {
             return false;
         };
 
-        state.first_line = next_line_id;
-        state.lines.set_current_line(state.first_line);
+        self.first_line = next_line_id;
+        self.lines.set_current_line(self.first_line);
         return true;
     }
 
-    fn scroll_up(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        lD4!(MA, "scroll_up: state.line_offset: {} indexes {:?}",
-            state.line_offset, state.line_indexes);
+    fn scroll_up(&mut self) -> bool {
+        lD4!(MA, "scroll_up: self.line_offset: {} indexes {:?}",
+            self.line_offset, self.line_indexes);
 
-        if state.line_offset > 0 {
-            state.line_offset -= 1;
+        if self.line_offset > 0 {
+            self.line_offset -= 1;
             return true;
         }
 
-        let mode = state.display_mode;
-        let first_line = state.first_line;
-        let Some(line_id) = state.lines.prev_line(SearchType::Tag, first_line,
-            &state.patterns, mode, false) else
+        let mode = self.display_mode;
+        let first_line = self.first_line;
+        let Some(line_id) = self.lines.prev_line(SearchType::Tag, first_line,
+            &self.patterns, mode, false) else
         {
             return false;
         };
-        state.first_line = line_id;
-        state.lines.set_current_line(state.first_line);
+        self.first_line = line_id;
+        self.lines.set_current_line(self.first_line);
 
-        let pline = state.lines.get(line_id, &state.patterns).unwrap();
+        let pline = self.lines.get(line_id, &self.patterns).unwrap();
         let linelen = pline.chars.len() as u16;
-        if linelen > state.area_width {
-            state.line_offset = (linelen - state.area_width) as usize /
-                (state.area_width as usize - self.indent_chars as usize) + 1;
+        if linelen > self.area_width {
+            self.line_offset = (linelen - self.area_width) as usize /
+                (self.area_width as usize - self.indent_chars as usize) + 1;
         }
         return true;
     }
 
-    fn start_of_line(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((_, line_ix, _)) = self.resolve_cursor_position(&mut state) else {
+    fn start_of_line(&mut self) -> bool {
+        let Some((_, line_ix, _)) = self.resolve_cursor_position() else {
             return false;
         };
-        let (x, y) = self.cursor_from_pos_ix(&state, 0, line_ix, state.area_width);
-        state.cursor_x = x as i16;
-        state.cursor_y = y as i16;
+        let (x, y) = self.cursor_from_pos_ix(0, line_ix, self.area_width);
+        self.cursor_x = x as i16;
+        self.cursor_y = y as i16;
 
         false
     }
 
-    fn end_of_line(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((_, line_ix, _)) = self.resolve_cursor_position(&mut state) else {
+    fn end_of_line(&mut self) -> bool {
+        let Some((_, line_ix, _)) = self.resolve_cursor_position() else {
             return false;
         };
-        let (x, y) = self.cursor_from_pos_ix(&state, state.plines[line_ix].chars.len() - 1,
-            line_ix, state.area_width);
-        state.cursor_x = x as i16;
-        state.cursor_y = y as i16;
+        let (x, y) = self.cursor_from_pos_ix(self.plines[line_ix].chars.len() - 1,
+            line_ix, self.area_width);
+        self.cursor_x = x as i16;
+        self.cursor_y = y as i16;
 
         false
     }
@@ -613,21 +564,21 @@ impl App {
     // return : None if cursor is not on a line
     // return : Some(None, index, part) if cursor is on the whitespace part of the line
     // return : Some(Some(position), index, part) if cursor is on the text part of the line
-    fn resolve_cursor_position(&self, state: &mut State) -> Option<(Option<usize>, usize, usize)> {
-        let Some(index) = state.line_indexes.get(state.cursor_y as usize) else {
+    fn resolve_cursor_position(&self) -> Option<(Option<usize>, usize, usize)> {
+        let Some(index) = self.line_indexes.get(self.cursor_y as usize) else {
             return None;
         };
-        lD5!(MA, "cursor_y {} index {:?}", state.cursor_y, index);
+        lD5!(MA, "cursor_y {} index {:?}", self.cursor_y, index);
         let pos = if index.line_part > 0 {
-            if state.cursor_x < self.indent_chars as i16 {
+            if self.cursor_x < self.indent_chars as i16 {
                 lD5!(MA, "returns None, line_ix: {} line_part: {}", index.line_ix, index.line_part);
                 return Some((None, index.line_ix, index.line_part));
             }
-            index.char_index + state.cursor_x as usize - self.indent_chars as usize
+            index.char_index + self.cursor_x as usize - self.indent_chars as usize
         } else {
-            index.char_index + state.cursor_x as usize
+            index.char_index + self.cursor_x as usize
         };
-        if pos >= state.plines[index.line_ix].chars.len() {
+        if pos >= self.plines[index.line_ix].chars.len() {
             lD5!(MA, "returns None, line_ix: {} line_part: {}", index.line_ix, index.line_part);
             return Some((None, index.line_ix, index.line_part));
         }
@@ -637,14 +588,14 @@ impl App {
         Some((Some(pos), index.line_ix, index.line_part))
     }
 
-    fn cursor_from_pos_ix(&self, state: &State, pos: usize, ix: usize, width: u16) -> (u16, u16) {
+    fn cursor_from_pos_ix(&self, pos: usize, ix: usize, width: u16) -> (u16, u16) {
         // find new y position
         lD5!(MA, "cursor_from_pos_ix: pos: {} ix: {} width: {}", pos, ix, width);
         let mut y = 0;
         for i in 0..ix {
-            let mut parts = self.line_parts(&state.plines[i], width);
+            let mut parts = self.line_parts(&self.plines[i], width);
             if i == 0 {
-                parts -= state.line_offset;
+                parts -= self.line_offset;
             }
             y += parts;
             lD5!(MA, "line {} has {} parts new y {}", i, parts, y);
@@ -682,13 +633,12 @@ impl App {
         }
     }
 
-    fn tag_hide(&self, all: bool, patmode: PatternMode) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((pos, line_ix, line_part)) = self.resolve_cursor_position(&mut state) else {
+    fn tag_hide(&mut self, all: bool, patmode: PatternMode) -> bool {
+        let Some((pos, line_ix, line_part)) = self.resolve_cursor_position() else {
             return false;
         };
 
-        let line = &state.plines[line_ix];
+        let line = &self.plines[line_ix];
         let line_id = line.line_id;
 
         if all {
@@ -696,11 +646,11 @@ impl App {
                 if let Some(ref matches) = line.chars[pos].matches {
                     if matches.len() != 1 {
                         // don't do anything on more that one match, it might be confusing
-                        state.status_message = Some("ambiguous selection".to_string());
+                        self.status_message = Some("ambiguous selection".to_string());
                         return false;
                     }
                     let (id, _) = matches[0];
-                    let mode = state.patterns.get(id).mode;
+                    let mode = self.patterns.get(id).mode;
                     let (new_mode, new_variant) = if mode == PatternMode::Marking {
                         if patmode == PatternMode::Tagging {
                             (PatternMode::Tagging, MarkType::Tag)
@@ -711,22 +661,22 @@ impl App {
                         (PatternMode::Marking, MarkType::Mark)
                     } else if mode == PatternMode::Search {
                         // convert search to tag
-                        state.last_search = None;
+                        self.last_search = None;
                         (PatternMode::Tagging, MarkType::Tag)
                     } else {
                         return false;
                     };
 
                     lD1!(MA, "mark/hide: set pattern {} tagging to {:?}", id, new_mode);
-                    let mode = state.patterns.get(id).mode;
-                    state.patterns.with(id, |p| {
+                    let mode = self.patterns.get(id).mode;
+                    self.patterns.with(id, |p| {
                         p.mode = new_mode;
                         p.style.variant = new_variant;
                     });
-                    state.update_patterns(mode);
-                    state.update_patterns(new_mode);
+                    self.update_patterns(mode);
+                    self.update_patterns(new_mode);
 
-                    self.move_line_under_cursor(&mut state, line_id, line_part);
+                    self.move_line_under_cursor(line_id, line_part);
 
                     return true;
                 }
@@ -734,52 +684,51 @@ impl App {
         }
 
         lD3!(MA, "tag: line_ix: {} pos: {:?} id {}", line_ix, pos, line.line_id);
-        lD5!(MA, "line_indexes: {:?}", state.line_indexes);
+        lD5!(MA, "line_indexes: {:?}", self.line_indexes);
         let line_id = line.line_id;
         match patmode {
-            PatternMode::Tagging => state.lines.toggle_tag(line_id),
-            PatternMode::Hiding => state.lines.toggle_hide(line_id),
+            PatternMode::Tagging => self.lines.toggle_tag(line_id),
+            PatternMode::Hiding => self.lines.toggle_hide(line_id),
             _ => panic!("unexpected pattern mode {:?}", patmode),
         }
 
-        self.move_line_under_cursor(&mut state, line_id, line_part);
+        self.move_line_under_cursor(line_id, line_part);
 
         true
     }
 
-    fn mark(&self, match_type: MatchType) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((pos, line_ix, line_part)) = self.resolve_cursor_position(&mut state) else {
+    fn mark(&mut self, match_type: MatchType) -> bool {
+        let Some((pos, line_ix, line_part)) = self.resolve_cursor_position() else {
             return false;
         };
         let Some(mut pos) = pos else {
             return false;
         };
         lD1!(MA, "mark: line: {} pos: {} char: {}", line_ix, pos,
-            state.plines[line_ix].chars[pos].c);
-        if let Some(ref matches) = state.plines[line_ix].chars[pos].matches {
+            self.plines[line_ix].chars[pos].c);
+        if let Some(ref matches) = self.plines[line_ix].chars[pos].matches {
             let matches = matches.clone();
             // only act on last match
             if let Some(&(id, _)) = matches.last() {
                 // convert search to mark
-                if state.patterns.get(id).mode == PatternMode::Search {
+                if self.patterns.get(id).mode == PatternMode::Search {
                     // give it a new color
-                    let match_index = state.mark_style.index;
-                    state.mark_style.cycle_forward();
-                    state.patterns.with(id, |p| {
+                    let match_index = self.mark_style.index;
+                    self.mark_style.cycle_forward();
+                    self.patterns.with(id, |p| {
                         p.mode = PatternMode::Marking;
                         p.style.variant = MarkType::Mark;
                         p.style.index = match_index;
                     });
-                    state.update_patterns(PatternMode::Search);
-                    if Some(id) == state.last_search {
-                        state.last_search = None;
+                    self.update_patterns(PatternMode::Search);
+                    if Some(id) == self.last_search {
+                        self.last_search = None;
                     }
                     return true;
                 }
-                state.remove_pattern(id);
-                let line_id = state.plines[line_ix].line_id;
-                self.move_line_under_cursor(&mut state, line_id, line_part);
+                self.remove_pattern(id);
+                let line_id = self.plines[line_ix].line_id;
+                self.move_line_under_cursor(line_id, line_part);
 
                 return true;
             }
@@ -789,7 +738,7 @@ impl App {
 
         let deliminator = match_type.delimiter();
 
-        let line = &state.plines[line_ix];
+        let line = &self.plines[line_ix];
         if deliminator.contains(line.chars[pos].c) {
             return false;
         }
@@ -805,22 +754,21 @@ impl App {
         }
 
         lD1!(MA, "mark: pattern: {}", pattern);
-        let style = state.mark_style.get(MarkType::Mark);
-        state.mark_style.cycle_forward();
-        state.add_pattern(&pattern, match_type, style, PatternMode::Marking);
+        let style = self.mark_style.get(MarkType::Mark);
+        self.mark_style.cycle_forward();
+        self.add_pattern(&pattern, match_type, style, PatternMode::Marking);
 
         true
     }
 
-    fn cycle_color(&self, direction: Direction) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((pos, line_ix, _)) = self.resolve_cursor_position(&mut state) else {
+    fn cycle_color(&mut self, direction: Direction) -> bool {
+        let Some((pos, line_ix, _)) = self.resolve_cursor_position() else {
             return false;
         };
         let Some(pos) = pos else {
             return false;
         };
-        let line = &state.plines[line_ix];
+        let line = &self.plines[line_ix];
         lD1!(MA, "mark: line: {} pos: {} char: {}", line_ix, pos, line.chars[pos].c);
         if let Some(ref matches) = line.chars[pos].matches {
             if matches.len() != 1 {
@@ -828,7 +776,7 @@ impl App {
                 return false;
             }
             let (id, _) = matches[0];
-            state.patterns.with(id, |p| {
+            self.patterns.with(id, |p| {
                 if direction == Direction::Forward {
                     p.style.cycle_forward();
                 } else {
@@ -842,12 +790,11 @@ impl App {
         return false;
     }
 
-    fn mark_extend(&self, extend: bool, direction: Direction) -> bool {
-        let mut state = self.state.borrow_mut();
-        let Some((pos, line_ix, _)) = self.resolve_cursor_position(&mut state) else {
+    fn mark_extend(&mut self, extend: bool, direction: Direction) -> bool {
+        let Some((pos, line_ix, _)) = self.resolve_cursor_position() else {
             return false;
         };
-        let pline = &state.plines[line_ix];
+        let pline = &self.plines[line_ix];
         let Some(mut pos) = pos else {
             return false;
         };
@@ -879,7 +826,7 @@ impl App {
                     }
                     // extend the match
                     let c = pline.chars[pos].c;
-                    state.patterns.with(id, |p| {
+                    self.patterns.with(id, |p| {
                         if direction == Direction::Forward {
                             p.pattern.push(c);
                         } else {
@@ -890,7 +837,7 @@ impl App {
                     });
                     break;
                 } else {
-                    state.patterns.with(id, |p| {
+                    self.patterns.with(id, |p| {
                         if p.pattern.len() > 1 {
                             if direction == Direction::Forward {
                                 p.pattern.pop();
@@ -904,65 +851,64 @@ impl App {
                 }
                 break;
             }
-            let mode = state.patterns.get(id).mode;
-            state.update_patterns(mode);
+            let mode = self.patterns.get(id).mode;
+            self.update_patterns(mode);
         } else if extend {
             let c = pline.chars[pos].c;
-            let style = state.mark_style.get(MarkType::Mark);
-            state.mark_style.cycle_forward();
-            state.add_pattern(&c.to_string(), MatchType::Text, style, PatternMode::Marking);
+            let style = self.mark_style.get(MarkType::Mark);
+            self.mark_style.cycle_forward();
+            self.add_pattern(&c.to_string(), MatchType::Text, style, PatternMode::Marking);
         }
 
         return true;
     }
 
-    fn offsets(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        let line_id_len = self.state.borrow().lines.last_line_id().to_string().len();
-        state.display_offset_len = line_id_len;
-        state.display_offset = !state.display_offset;
+    fn offsets(&mut self) -> bool {
+        let line_id_len = self.lines.last_line_id().to_string().len();
+        self.display_offset_len = line_id_len;
+        self.display_offset = !self.display_offset;
 
         return true;
     }
 
-    fn adjust_to_unfiltered_line(&self, state: &mut State, line_id: LineId) -> Option<LineId> {
+    fn adjust_to_unfiltered_line(&mut self, line_id: LineId) -> Option<LineId> {
         lD2!(MA, "filter: current line {} is filtered", line_id);
-        let mut res = state.lines.next_line(SearchType::Tag, line_id, &state.patterns,
-            state.display_mode, true);
+        let mut res = self.lines.next_line(SearchType::Tag, line_id, &self.patterns,
+            self.display_mode, true);
         if res.is_none() {
             lD2!(MA, "filter: trying next line backwards");
-            res = state.lines.prev_line(SearchType::Tag, line_id, &state.patterns,
-                state.display_mode, true);
+            res = self.lines.prev_line(SearchType::Tag, line_id, &self.patterns,
+                self.display_mode, true);
         }
         let Some(id) = res else {
             lD2!(MA, "filter: nothing found, staying in normal mode");
-            state.status_message = Some("nothing to display".to_string());
-            state.display_mode = DisplayMode::Normal;
+            self.status_message = Some("nothing to display".to_string());
+            self.display_mode = DisplayMode::Normal;
             return None;
         };
 
         Some(id)
     }
 
-    fn move_line_under_cursor(&self, state: &mut State, line_id: LineId, line_part: usize) {
+    fn move_line_under_cursor(&mut self, line_id: LineId, line_part: usize) {
         // we want line_id in display line line_ix. find lines backwards to find a suitable
         // first_line and offset
         let mut first_line = line_id;
-        let mut lines_to_go_back = state.cursor_y as isize - line_part as isize;
+        let mut lines_to_go_back = self.cursor_y as isize - line_part as isize;
         lD2!(MA, "move_under_cursor: line_id {} line_part: {} lines_to_go_back: {} first_line {}",
             line_id, line_part, lines_to_go_back, first_line);
-        lD2!(MA, "cursor_x {} cursor_y: {}", state.cursor_x, state.cursor_y);
+        lD2!(MA, "cursor_x {} cursor_y: {}", self.cursor_x, self.cursor_y);
         let mut first_parts = None;
         while lines_to_go_back > 0 {
-            let Some(prev_line_id) = state.lines.prev_line(SearchType::Tag, first_line,
-                &state.patterns, state.display_mode, false) else
+            let Some(prev_line_id) = self.lines.prev_line(SearchType::Tag, first_line,
+                &self.patterns, self.display_mode, false) else
             {
                 lD2!(MA, "can't get back any further");
                 break;
             };
-            let pline = state.lines.get(prev_line_id, &state.patterns).unwrap();
+            let pline = self.lines.get(prev_line_id, &self.patterns).unwrap();
             first_line = prev_line_id;
-            let parts = self.line_parts(&pline, state.area_width) as isize;
+            let parts = self.line_parts(&pline, self.area_width) as isize;
             lines_to_go_back -= parts;
             lD2!(MA, "line {} has {} parts, lines_to_go_back {}", prev_line_id, parts,
                 lines_to_go_back);
@@ -970,55 +916,54 @@ impl App {
         }
         lD2!(MA, "first_line: {} lines_to_go_back: {} first_parts {:?}", first_line,
             lines_to_go_back, first_parts);
-        state.first_line = first_line;
-        state.lines.set_current_line(state.first_line);
+        self.first_line = first_line;
+        self.lines.set_current_line(self.first_line);
         if lines_to_go_back > 0 {
-            state.cursor_y -= lines_to_go_back as i16;
+            self.cursor_y -= lines_to_go_back as i16;
         }
-        state.line_offset = 0;
+        self.line_offset = 0;
         if let Some(first_parts) = first_parts {
             if lines_to_go_back < 0 && -lines_to_go_back < first_parts {
-                state.line_offset = -lines_to_go_back as usize;
-                lD2!(MA, "filter: line_offset: {}", state.line_offset);
+                self.line_offset = -lines_to_go_back as usize;
+                lD2!(MA, "filter: line_offset: {}", self.line_offset);
             }
         }
     }
 
-    fn display(&self, direction: Direction) -> bool {
-        let mut state = self.state.borrow_mut();
-        let old_mode = state.display_mode;
+    fn display(&mut self, direction: Direction) -> bool {
+        let old_mode = self.display_mode;
 
         if direction == Direction::Forward {
-            match state.display_mode {
-                DisplayMode::All => state.display_mode = DisplayMode::Normal,
-                DisplayMode::Normal => state.display_mode = DisplayMode::Tagged,
-                DisplayMode::Tagged => state.display_mode = DisplayMode::Manual,
+            match self.display_mode {
+                DisplayMode::All => self.display_mode = DisplayMode::Normal,
+                DisplayMode::Normal => self.display_mode = DisplayMode::Tagged,
+                DisplayMode::Tagged => self.display_mode = DisplayMode::Manual,
                 DisplayMode::Manual => return false,
             }
         } else {
-            match state.display_mode {
-                DisplayMode::Manual => state.display_mode = DisplayMode::Tagged,
-                DisplayMode::Tagged => state.display_mode = DisplayMode::Normal,
-                DisplayMode::Normal => state.display_mode = DisplayMode::All,
+            match self.display_mode {
+                DisplayMode::Manual => self.display_mode = DisplayMode::Tagged,
+                DisplayMode::Tagged => self.display_mode = DisplayMode::Normal,
+                DisplayMode::Normal => self.display_mode = DisplayMode::All,
                 DisplayMode::All => return false,
             }
         }
 
-        let line_index = &state.line_indexes[state.cursor_y as usize];
+        let line_index = &self.line_indexes[self.cursor_y as usize];
         let line_ix = line_index.line_ix;
         let line_part = line_index.line_part;
-        let line_id = state.plines[line_ix].line_id;
-        let y = state.cursor_y;
-        state.before_filter_pos.insert(old_mode as usize, (line_id, line_part, y));
+        let line_id = self.plines[line_ix].line_id;
+        let y = self.cursor_y;
+        self.before_filter_pos.insert(old_mode as usize, (line_id, line_part, y));
 
         // move cursor to next unfiltered line
         let (line_id, line_part) = if let Some(&(id, part, y)) =
-            state.before_filter_pos.get(&(state.display_mode as usize))
+            self.before_filter_pos.get(&(self.display_mode as usize))
         {
             // cursor hasn't moved sind last mode change, try to restore the old position
-            state.cursor_y = y as i16;
+            self.cursor_y = y as i16;
             (id, part)
-        } else if let Some(new) = self.adjust_to_unfiltered_line(&mut state, line_id) {
+        } else if let Some(new) = self.adjust_to_unfiltered_line(line_id) {
             if new != line_id {
                 (new, 0)
             } else {
@@ -1026,52 +971,48 @@ impl App {
             }
         } else {
             // if we can't find a line, stay in previous mode
-            state.display_mode = old_mode;
+            self.display_mode = old_mode;
             return true;
         };
 
-        self.move_line_under_cursor(&mut state, line_id, line_part);
+        self.move_line_under_cursor(line_id, line_part);
 
         true
     }
 
-    fn search(&self, direction: Direction, match_type: MatchType) -> bool {
-        let mut state = self.state.borrow_mut();
-        state.in_search_input = true;
-        state.current_search = String::new();
-        state.search_direction = direction;
-        state.search_match_type = match_type;
+    fn search(&mut self, direction: Direction, match_type: MatchType) -> bool {
+        self.in_search_input = true;
+        self.current_search = String::new();
+        self.search_direction = direction;
+        self.search_match_type = match_type;
 
         false
     }
 
     // search string is collected, do the actual search
-    fn do_search(&self, search: String) {
-        let mut state = self.state.borrow_mut();
+    fn do_search(&mut self, search: String) {
         lD5!(MA, "do_search: search: {}", search);
-        if let Some(id) = state.last_search {
-            state.remove_pattern(id);
-            state.last_search = None;
+        if let Some(id) = self.last_search {
+            self.remove_pattern(id);
+            self.last_search = None;
         }
         if search.is_empty() {
             return;
         }
         // TODO: check if the pattern is valid
-        let style = state.mark_style.get(MarkType::Search);
-        let match_type = state.search_match_type;
-        let id = state.add_pattern(&search, match_type, style, PatternMode::Search);
-        state.last_search = Some(id);
-        drop(state);
+        let style = self.mark_style.get(MarkType::Search);
+        let match_type = self.search_match_type;
+        let id = self.add_pattern(&search, match_type, style, PatternMode::Search);
+        self.last_search = Some(id);
 
         self.search_cont(Direction::Forward);
     }
 
-    fn match_has_mode(&self, state: &State, pline: &ProcessedLine, pos: usize, mode: PatternMode)
-        -> bool
+    fn match_has_mode(&self, pline: &ProcessedLine, pos: usize, mode: PatternMode) -> bool
     {
         if let Some(ref matches) = pline.chars[pos].matches {
             for &(id, _) in matches {
-                if state.patterns.get(id).mode == mode {
+                if self.patterns.get(id).mode == mode {
                     return true;
                 }
             }
@@ -1080,11 +1021,11 @@ impl App {
         false
     }
 
-    fn match_get_search_ix(&self, state: &State, pline: &ProcessedLine, pos: usize) -> Option<usize>
+    fn match_get_search_ix(&self, pline: &ProcessedLine, pos: usize) -> Option<usize>
     {
         if let Some(ref matches) = pline.chars[pos].matches {
             for &(id, ix) in matches {
-                if state.patterns.get(id).mode == PatternMode::Search {
+                if self.patterns.get(id).mode == PatternMode::Search {
                     return Some(ix);
                 }
             }
@@ -1106,12 +1047,12 @@ impl App {
     }
 
     // return the start position of the search match, if any
-    fn get_search_match_forward(&self, state: &State, pline: &ProcessedLine, pos: usize,
-        skip_current: bool) -> Option<usize>
+    fn get_search_match_forward(&self, pline: &ProcessedLine, pos: usize, skip_current: bool)
+        -> Option<usize>
     {
         let mut pos = pos;
         if skip_current {
-            let ix = self.match_get_search_ix(state, pline, pos);
+            let ix = self.match_get_search_ix(pline, pos);
             if let Some(ix) = ix {
                 while pos < pline.chars.len() {
                     if !self.match_has_search_ix(pline, pos, ix) {
@@ -1122,7 +1063,7 @@ impl App {
             }
         };
         while pos < pline.chars.len() {
-            if self.match_has_mode(&state, pline, pos, PatternMode::Search) {
+            if self.match_has_mode(pline, pos, PatternMode::Search) {
                 return Some(pos);
             }
             pos += 1;
@@ -1131,12 +1072,12 @@ impl App {
     }
 
     // return the start position of the search match, if any
-    fn get_search_match_backward(&self, state: &State, pline: &ProcessedLine, pos: usize,
-        skip_current: bool) -> Option<usize>
+    fn get_search_match_backward(&mut self, pline: &ProcessedLine, pos: usize, skip_current: bool)
+        -> Option<usize>
     {
         let mut pos = pos as isize;
         if skip_current {
-            let ix = self.match_get_search_ix(state, pline, pos as usize);
+            let ix = self.match_get_search_ix(pline, pos as usize);
             if let Some(ix) = ix {
                 while pos >= 0 {
                     if !self.match_has_search_ix(pline, pos as usize, ix) {
@@ -1147,9 +1088,9 @@ impl App {
             }
         };
         while pos >= 0 {
-            if self.match_has_mode(state, pline, pos as usize, PatternMode::Search) {
+            if self.match_has_mode(pline, pos as usize, PatternMode::Search) {
                 // found a match, now find the start of the match
-                let Some(ix) = self.match_get_search_ix(state, pline, pos as usize) else {
+                let Some(ix) = self.match_get_search_ix(pline, pos as usize) else {
                     return None;
                 };
                 while pos > 0 && self.match_has_search_ix(pline, pos as usize - 1, ix) {
@@ -1162,8 +1103,8 @@ impl App {
         None
     }
 
-    fn search_cont(&self, direction: Direction) -> bool {
-        let search_dir = self.state.borrow().search_direction;
+    fn search_cont(&mut self, direction: Direction) -> bool {
+        let search_dir = self.search_direction;
         if search_dir == direction {
             self.search_next()
         } else {
@@ -1171,10 +1112,8 @@ impl App {
         }
     }
 
-    fn search_next(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-
-        let (pos, ix, part) = match self.resolve_cursor_position(&mut state) {
+    fn search_next(&mut self) -> bool {
+        let (pos, ix, part) = match self.resolve_cursor_position() {
             Some(x) => x,
             None => (None, 0, 0),
         };
@@ -1183,70 +1122,68 @@ impl App {
         } else if part == 0 {
             0
         } else {
-            state.area_width as usize +
-                (part - 1) * (state.area_width as usize - self.indent_chars as usize)
+            self.area_width as usize +
+                (part - 1) * (self.area_width as usize - self.indent_chars as usize)
         };
-        let line_id = state.plines[ix].line_id;
+        let line_id = self.plines[ix].line_id;
         // don't take line from cache, as the matches aren't up-to-date here
-        let pline = state.lines.get(line_id, &state.patterns).unwrap();
+        let pline = self.lines.get(line_id, &self.patterns).unwrap();
         lD2!(MA, "search_next: pos: {} ix: {} part: {} line: {}", pos, ix, part, pline.line_id);
-        if let Some(match_pos) = self.get_search_match_forward(&state, &pline, pos, true) {
+        if let Some(match_pos) = self.get_search_match_forward(&pline, pos, true) {
             lD2!(MA, "do_search: found match at {}", match_pos);
-            let (x, y) = self.cursor_from_pos_ix(&state, match_pos, ix, state.area_width);
-            state.cursor_x = x as i16;
-            state.cursor_y = y as i16;
+            let (x, y) = self.cursor_from_pos_ix(match_pos, ix, self.area_width);
+            self.cursor_x = x as i16;
+            self.cursor_y = y as i16;
             return true;
         }
-        let mut res = state.lines.next_line(SearchType::Search, pline.line_id, &state.patterns,
+        let mut res = self.lines.next_line(SearchType::Search, pline.line_id, &self.patterns,
             DisplayMode::Normal, false);
         lD2!(MA, "do_search: next_line: {:?}", res);
         if res.is_none() {
-            state.lines.set_current_line(0);  // hint for FileSearch
-            res = state.lines.next_line(SearchType::Search, 0, &state.patterns,
+            self.lines.set_current_line(0);  // hint for FileSearch
+            res = self.lines.next_line(SearchType::Search, 0, &self.patterns,
                 DisplayMode::Normal, true);
             lD2!(MA, "do_search: next_line from 0: {:?}", res);
             if res.is_some() {
-                state.status_message = Some("Search wrapped".to_string());
+                self.status_message = Some("Search wrapped".to_string());
             }
         }
         let Some(line_id) = res else {
             lD2!(MA, "do_search: nothing found");
-            state.status_message = Some("No matches".to_string());
+            self.status_message = Some("No matches".to_string());
             return false;
         };
 
-        let pline = state.lines.get(line_id, &state.patterns).unwrap();
+        let pline = self.lines.get(line_id, &self.patterns).unwrap();
         lD10!(MA, "current line: {} {:?}", line_id, pline);
-        let match_pos = self.get_search_match_forward(&state, &pline, 0, false).unwrap();
+        let match_pos = self.get_search_match_forward(&pline, 0, false).unwrap();
 
         // if line is on screen, do not scroll
-        let ix = state.line_indexes.iter().position(|x| state.plines[x.line_ix].line_id == line_id);
+        let ix = self.line_indexes.iter().position(|x| self.plines[x.line_ix].line_id == line_id);
         if let Some(ix) = ix {
-            let (x, y) = self.cursor_from_pos_len(match_pos, state.area_width);
+            let (x, y) = self.cursor_from_pos_len(match_pos, self.area_width);
             let y = y + ix as u16;
-            if y < state.area_height {
-                state.cursor_x = x as i16;
-                state.cursor_y = y as i16;
+            if y < self.area_height {
+                self.cursor_x = x as i16;
+                self.cursor_y = y as i16;
                 return true;
             }
         }
 
         lD2!(MA, "do_search: found match at {}", match_pos);
-        let (x, y) = self.cursor_from_pos_len(match_pos, state.area_width);
-        state.cursor_x = x as i16;
-        state.cursor_y = y as i16;
+        let (x, y) = self.cursor_from_pos_len(match_pos, self.area_width);
+        self.cursor_x = x as i16;
+        self.cursor_y = y as i16;
 
-        state.first_line = line_id;
-        state.lines.set_current_line(state.first_line);
-        state.line_offset = 0;
+        self.first_line = line_id;
+        self.lines.set_current_line(self.first_line);
+        self.line_offset = 0;
 
         true
     }
 
-    fn search_prev(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-
-        let (pos, ix, part) = match self.resolve_cursor_position(&mut state) {
+    fn search_prev(&mut self) -> bool {
+        let (pos, ix, part) = match self.resolve_cursor_position() {
             Some(x) => x,
             None => (None, 0, 0),
         };
@@ -1255,68 +1192,67 @@ impl App {
         } else if part == 0 {
             0
         } else {
-            state.area_width as usize +
-                (part - 1) * (state.area_width as usize - self.indent_chars as usize)
+            self.area_width as usize +
+                (part - 1) * (self.area_width as usize - self.indent_chars as usize)
         };
-        let line_id = state.plines[ix].line_id;
+        let line_id = self.plines[ix].line_id;
         // don't take line from cache, as the matches aren't up-to-date here
-        let pline = state.lines.get(line_id, &state.patterns).unwrap();
+        let pline = self.lines.get(line_id, &self.patterns).unwrap();
         lD2!(MA, "search_prev: pos: {} ix: {} part: {} line: {}", pos, ix, part, pline.line_id);
-        if let Some(match_pos) = self.get_search_match_backward(&state, &pline, pos, true) {
+        if let Some(match_pos) = self.get_search_match_backward(&pline, pos, true) {
             lD2!(MA, "do_search: found match at {}", match_pos);
-            let (x, y) = self.cursor_from_pos_ix(&state, match_pos, ix, state.area_width);
-            state.cursor_x = x as i16;
-            state.cursor_y = y as i16;
+            let (x, y) = self.cursor_from_pos_ix(match_pos, ix, self.area_width);
+            self.cursor_x = x as i16;
+            self.cursor_y = y as i16;
             return true;
         }
-        let mut res = state.lines.prev_line(SearchType::Search, pline.line_id, &state.patterns,
+        let mut res = self.lines.prev_line(SearchType::Search, pline.line_id, &self.patterns,
             DisplayMode::Normal, false);
         lD2!(MA, "do_search: next_line: {:?}", res);
         if res.is_none() {
-            let last_line_id = state.lines.last_line_id();
-            state.lines.set_current_line(last_line_id); // hint for FileSearch
-            res = state.lines.prev_line(SearchType::Search, last_line_id, &state.patterns,
+            let last_line_id = self.lines.last_line_id();
+            self.lines.set_current_line(last_line_id); // hint for FileSearch
+            res = self.lines.prev_line(SearchType::Search, last_line_id, &self.patterns,
                 DisplayMode::Normal, true);
             lD2!(MA, "do_search: next_line from 0: {:?}", res);
         }
         let Some(line_id) = res else {
             lD2!(MA, "do_search: nothing found");
-            state.status_message = Some("No matches".to_string());
+            self.status_message = Some("No matches".to_string());
             return false;
         };
 
-        let pline = state.lines.get(line_id, &state.patterns).unwrap();
+        let pline = self.lines.get(line_id, &self.patterns).unwrap();
         lD10!(MA, "current line: {} {:?}", line_id, pline);
         let len = pline.chars.len();
-        let match_pos = self.get_search_match_backward(&state, &pline, len - 1, false).unwrap();
+        let match_pos = self.get_search_match_backward(&pline, len - 1, false).unwrap();
 
         // if line is on screen, do not scroll
-        let ix = state.line_indexes.iter().position(|x| state.plines[x.line_ix].line_id == line_id);
+        let ix = self.line_indexes.iter().position(|x| self.plines[x.line_ix].line_id == line_id);
         if let Some(ix) = ix {
-            let (x, y) = self.cursor_from_pos_len(match_pos, state.area_width);
+            let (x, y) = self.cursor_from_pos_len(match_pos, self.area_width);
             let y = y + ix as u16;
-            if y < state.area_height {
-                state.cursor_x = x as i16;
-                state.cursor_y = y as i16;
+            if y < self.area_height {
+                self.cursor_x = x as i16;
+                self.cursor_y = y as i16;
                 return true;
             }
         }
 
         lD2!(MA, "do_search: found match at {}", match_pos);
-        let (x, y) = self.cursor_from_pos_len(match_pos, state.area_width);
-        state.cursor_x = x as i16;
-        state.cursor_y = y as i16;
+        let (x, y) = self.cursor_from_pos_len(match_pos, self.area_width);
+        self.cursor_x = x as i16;
+        self.cursor_y = y as i16;
 
-        state.first_line = line_id;
-        state.lines.set_current_line(state.first_line);
-        state.line_offset = 0;
+        self.first_line = line_id;
+        self.lines.set_current_line(self.first_line);
+        self.line_offset = 0;
 
         true
     }
 
-    fn help(&self) -> bool {
-        let mut state = self.state.borrow_mut();
-        state.display_help = !state.display_help;
+    fn help(&mut self) -> bool {
+        self.display_help = !self.display_help;
         true
     }
 
@@ -1334,9 +1270,8 @@ impl App {
                 .spacing(0)
                 .areas(bottom_area);
 
-        let line_id_len = self.state.borrow().lines.last_line_id().to_string().len();
-        let marker_len = if self.state.borrow().display_offset {
-            2 + line_id_len as usize + 1
+        let marker_len = if self.display_offset {
+            2 + self.display_offset_len as usize + 1
         } else {
             2
         };
@@ -1348,7 +1283,7 @@ impl App {
         [main_area, log_area, marker_area, input_area, status_area]
     }
 
-    fn process_event(&self, area: Rect, event: Option<Event>) {
+    fn process_event(&mut self, area: Rect, event: Option<Event>) {
         let [_, log_area, _, _, _] = self.calculate_layout(area);
 
         /*
@@ -1356,7 +1291,7 @@ impl App {
          */
         let mut recalc_lines = false;
         //idea: don't keep first line, but reference line, together with a position on screen
-        if self.state.borrow().in_search_input {
+        if self.in_search_input {
             recalc_lines |= self.handle_search_event_before_layout(&event);
         } else {
             recalc_lines |= self.handle_event_before_layout(&event);
@@ -1365,44 +1300,42 @@ impl App {
         /*
          * calculate cursor position on area change
          */
-        let mut state = self.state.borrow_mut();
-        if log_area.width != state.area_width || log_area.height != state.area_height {
+        if log_area.width != self.area_width || log_area.height != self.area_height {
             lD3!(MA, "process: area change: {}x{} -> {}x{}",
-                state.area_width, state.area_height, log_area.width, log_area.height);
-            if let Some((pos, ix, part)) = self.resolve_cursor_position(&mut state) {
+                self.area_width, self.area_height, log_area.width, log_area.height);
+            if let Some((pos, ix, part)) = self.resolve_cursor_position() {
                 if let Some(pos) = pos {
                     // when on text, keep the cursor on the same character
-                    let (x, y) = self.cursor_from_pos_ix(&state, pos, ix, log_area.width);
-                    state.cursor_x = x as i16;
-                    state.cursor_y = y as i16;
-                } else if state.cursor_x < self.indent_chars as i16 {
+                    let (x, y) = self.cursor_from_pos_ix(pos, ix, log_area.width);
+                    self.cursor_x = x as i16;
+                    self.cursor_y = y as i16;
+                } else if self.cursor_x < self.indent_chars as i16 {
                     // when in indent whitespace, keep it in the same column and part
-                    let parts = self.line_parts(&state.plines[ix], log_area.width);
-                    let (_, y) = self.cursor_from_pos_ix(&state, 0, ix, log_area.width);
-                    state.cursor_y = (y as usize + part.min(parts)) as i16;
-                    state.cursor_x = state.cursor_x.min(log_area.width as i16 - 1);
+                    let parts = self.line_parts(&self.plines[ix], log_area.width);
+                    let (_, y) = self.cursor_from_pos_ix(0, ix, log_area.width);
+                    self.cursor_y = (y as usize + part.min(parts)) as i16;
+                    self.cursor_x = self.cursor_x.min(log_area.width as i16 - 1);
                 } else {
                     // in whitespace at end of line
                     // calculate offset after last position
-                    let len = state.plines[ix].chars.len();
-                    let (x_end, _) = self.cursor_from_pos_ix(&state, len - 1, ix, state.area_width);
-                    let off = state.cursor_x - x_end as i16;
-                    let (x, y) = self.cursor_from_pos_ix(&state, len - 1, ix, log_area.width);
-                    state.cursor_x = (x as i16 + off).min(log_area.width as i16 - 1);
-                    state.cursor_y = y as i16;
+                    let len = self.plines[ix].chars.len();
+                    let (x_end, _) = self.cursor_from_pos_ix(len - 1, ix, self.area_width);
+                    let off = self.cursor_x - x_end as i16;
+                    let (x, y) = self.cursor_from_pos_ix(len - 1, ix, log_area.width);
+                    self.cursor_x = (x as i16 + off).min(log_area.width as i16 - 1);
+                    self.cursor_y = y as i16;
                 }
             } else {
                 // XXX leave unchanged?
             }
-            state.area_width = log_area.width;
-            state.area_height = log_area.height;
+            self.area_width = log_area.width;
+            self.area_height = log_area.height;
         }
-        drop(state);
 
         /*
          * Handle key events part 2
          */
-        if self.state.borrow().in_search_input {
+        if self.in_search_input {
             recalc_lines |= self.handle_search_event_after_layout(&event);
         } else {
             recalc_lines |= self.handle_event_after_layout(&event);
@@ -1412,21 +1345,20 @@ impl App {
          * build lines
          */
         lD5!(MA, "render: recalc_lines: {}", recalc_lines);
-        recalc_lines |= self.state.borrow().plines.is_empty();
+        recalc_lines |= self.plines.is_empty();
         while recalc_lines {
-            let mut state = self.state.borrow_mut();
             recalc_lines = false;
             let mut state_lines = Vec::new();
-            let skip = state.line_offset;
-            let mut curr_line_id = state.first_line;
+            let skip = self.line_offset;
+            let mut curr_line_id = self.first_line;
             let mut num_lines = 0;
             loop {
                 lD5!(MA, "render: curr_line_id: {} num_lines {} skip {}",
                     curr_line_id, num_lines, skip);
-                let mode = state.display_mode;
-                let pline = state.lines.get(curr_line_id, &state.patterns).unwrap();
-                let next_line_id = state.lines.next_line(SearchType::Tag, curr_line_id,
-                    &state.patterns, mode, false);
+                let mode = self.display_mode;
+                let pline = self.lines.get(curr_line_id, &self.patterns).unwrap();
+                let next_line_id = self.lines.next_line(SearchType::Tag, curr_line_id,
+                    &self.patterns, mode, false);
                 state_lines.push(pline.clone());
                 let parts = self.line_parts(&pline, log_area.width);
                 num_lines += parts;
@@ -1442,8 +1374,7 @@ impl App {
                     break;
                 }
             }
-            state.plines = state_lines;
-            drop(state);
+            self.plines = state_lines;
 
             while num_lines < log_area.height as usize {
                 let scrolled = self.scroll_up();
@@ -1456,10 +1387,8 @@ impl App {
             }
         }
     }
-}
 
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    fn render(&mut self, area: Rect, buf: &mut Buffer) {
         // ignore everything if the area is too small
         lD3!(MA, "render: area: {}x{} indent_chars {}", area.width, area.height, self.indent_chars);
         if area.width < self.indent_chars + 3 {
@@ -1482,9 +1411,8 @@ impl Widget for &App {
          */
         let mut lines = Vec::new();
         let mut line_indexes = Vec::new();
-        let mut state = self.state.borrow_mut();
-        let mut skip = state.line_offset;
-        'a: for (i, pline) in state.plines.iter().enumerate() {
+        let mut skip = self.line_offset;
+        'a: for (i, pline) in self.plines.iter().enumerate() {
             let mut ix = 0;
             let mut broken_into = 0;
             while ix < pline.chars.len() {
@@ -1519,42 +1447,42 @@ impl Widget for &App {
                 ix += len;
             }
         }
-        state.line_indexes = line_indexes;
+        self.line_indexes = line_indexes;
 
         /*
          * adjust cursor position if we don't have enough lines
          */
-        if state.cursor_y >= state.line_indexes.len() as i16 {
-            state.cursor_y = state.cursor_y.min(state.line_indexes.len() as i16 - 1);
-            lD5!(MA, "adjusting cursor_y to {}", state.cursor_y);
+        if self.cursor_y >= self.line_indexes.len() as i16 {
+            self.cursor_y = self.cursor_y.min(self.line_indexes.len() as i16 - 1);
+            lD5!(MA, "adjusting cursor_y to {}", self.cursor_y);
         }
 
-        lD3!(MA, "render: patterns: {:?}", state.patterns);
+        lD3!(MA, "render: patterns: {:?}", self.patterns);
 
         /*
          * render marker area
          */
         let mut markers = Vec::new();
-        for index in &state.line_indexes {
-            let line = &state.plines[index.line_ix];
+        for index in &self.line_indexes {
+            let line = &self.plines[index.line_ix];
             let mut spans = Vec::new();
-            if index.line_part == 0 && state.lines.is_hidden(line.line_id) {
+            if index.line_part == 0 && self.lines.is_hidden(line.line_id) {
                 spans.push(Span::raw("H "));
             } else if index.line_part == 0 &&
-                line.matches.iter().any(|&id| state.patterns.is_hiding(id))
+                line.matches.iter().any(|&id| self.patterns.is_hiding(id))
             {
                 spans.push(Span::raw("- "));
-            } else if index.line_part == 0 && state.lines.is_tagged(line.line_id) {
+            } else if index.line_part == 0 && self.lines.is_tagged(line.line_id) {
                 spans.push(Span::raw("T "));
             } else if index.line_part == 0 &&
-                line.matches.iter().any(|&id| state.patterns.is_tagging(id))
+                line.matches.iter().any(|&id| self.patterns.is_tagging(id))
             {
                 spans.push(Span::raw("* "));
             } else {
                 spans.push(Span::raw("  "));
             };
-            if state.display_offset && index.line_part == 0 {
-                let line_id_len = state.display_offset_len;
+            if self.display_offset && index.line_part == 0 {
+                let line_id_len = self.display_offset_len;
                 spans.push(Span::raw(format!("{:line_id_len$} ", line.line_id)).green());
             }
             markers.push(Line::from(spans));
@@ -1567,36 +1495,36 @@ impl Widget for &App {
          * render input area
          */
         let mut spans = Vec::new();
-        if state.in_search_input {
-            if state.search_match_type == MatchType::Regex {
+        if self.in_search_input {
+            if self.search_match_type == MatchType::Regex {
                 spans.push(Span::raw("&"));
-            } else if state.search_direction == Direction::Forward {
+            } else if self.search_direction == Direction::Forward {
                 spans.push(Span::raw("/"));
             } else {
                 spans.push(Span::raw("?"));
             }
-            spans.push(Span::raw(state.current_search.clone()));
-        } else if let Some(ref message) = state.status_message {
+            spans.push(Span::raw(self.current_search.clone()));
+        } else if let Some(ref message) = self.status_message {
             spans.push(Span::raw(message.clone()).blue().bold());
         } else {
             spans.push(Span::raw("^H").red().bold());
             spans.push(Span::raw(" Help "));
         }   
         let input = Line::from(spans);
-        state.status_message = None;
+        self.status_message = None;
 
         /*
          * render status area
          */
         // current cursor position
-        let cursor_pos = format!("{:3}:{:2} ", state.cursor_x, state.cursor_y);
+        let cursor_pos = format!("{:3}:{:2} ", self.cursor_x, self.cursor_y);
 
         // current position
-        let line_id = state.plines[state.line_indexes[state.cursor_y as usize].line_ix].line_id;
-        let position = (line_id as f64) / (state.lines.last_line_id() + 1) as f64 * 100.0;
+        let line_id = self.plines[self.line_indexes[self.cursor_y as usize].line_ix].line_id;
+        let position = (line_id as f64) / (self.lines.last_line_id() + 1) as f64 * 100.0;
         let position = format!("{:3.2}%", position);
         // display mode
-        let display_mode = match state.display_mode {
+        let display_mode = match self.display_mode {
             DisplayMode::Normal => "Normal",
             DisplayMode::Tagged => "Tagged",
             DisplayMode::All    => "All   ",
@@ -1625,15 +1553,15 @@ impl Widget for &App {
             .alignment(Alignment::Right)
             .render(status_area, buf);
 
-        if state.in_search_input {
-            *self.render_cursor.borrow_mut() =
-                (input_area.x + state.current_search.len() as u16 + 1, input_area.y);
+        if self.in_search_input {
+            self.render_cursor =
+                (input_area.x + self.current_search.len() as u16 + 1, input_area.y);
         } else {
-            *self.render_cursor.borrow_mut() =
-                (log_area.x + state.cursor_x as u16, log_area.y + state.cursor_y as u16);
+            self.render_cursor =
+                (log_area.x + self.cursor_x as u16, log_area.y + self.cursor_y as u16);
         }
 
-        if state.display_help && main_area.height > 4 {
+        if self.display_help && main_area.height > 4 {
             let max_area = Rect::new(2, 2, main_area.width - 4, main_area.height - 4);
             let _max_width = max_area.width as usize;
             let max_height = max_area.height as usize;
@@ -1669,6 +1597,74 @@ impl Widget for &App {
             Paragraph::new(lines)
                 .render(block_inner, buf);
         }
+    }
+}
+
+impl Logrok {
+    pub fn area(terminal: &DefaultTerminal) -> Result<Rect> {
+        let size = terminal.size()?;
+        Ok(Rect::new(0, 0, size.width, size.height))
+    }
+
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let (tx_req, rx_req) = std::sync::mpsc::channel();
+        let (tx_rsp, rx_rsp) = std::sync::mpsc::channel();
+        let s = self.clone();
+        let jh = std::thread::spawn(move || {
+            loop {
+                let Ok((event, area)) = rx_req.recv() else {
+                    break;
+                };
+                let mut inner = s.inner.lock().unwrap();
+                inner.process_event(area, Some(event));
+                tx_rsp.send(()).unwrap();
+            }
+        });
+        let mut inner = self.inner.lock().unwrap();
+        inner.process_event(Self::area(terminal)?, None);
+        while !inner.exit {
+            drop(inner);
+            terminal.draw(|frame| self.draw(frame))?;
+            let event = self.poll_events()?;
+            let area = Self::area(terminal)?;
+            tx_req.send((event, area)).unwrap();
+            rx_rsp.recv()?;
+            inner = self.inner.lock().unwrap();
+            if inner.exit {
+                break;
+            }
+        }
+        drop(tx_req);
+        jh.join().unwrap();
+        Ok(())
+    }
+
+    fn draw(&self, frame: &mut Frame) {
+        frame.render_widget(self, frame.area());
+        let cursor = self.inner.lock().unwrap().render_cursor;
+        frame.set_cursor_position(cursor);
+    }
+
+    fn poll_events(&mut self) -> io::Result<Event> {
+        let event = loop {
+            let event = event::read()?;
+            lD1!(MA, "event: {:?}", event);
+            match event {
+                // it's important to check that the event is a key press event as
+                // crossterm also emits key release and repeat events on Windows.
+                Event::Key(_) |
+                Event::Resize(_, _) => break event,
+                _ => (),
+            };
+        };
+        Ok(event)
+    }
+}
+
+impl Widget for &Logrok {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.render(area, buf)
     }
 }
 
@@ -1883,8 +1879,8 @@ fn main() -> Result<()> {
     terminal.clear()?;
     let indent = vec![" "; 79].join("");
     let mark_style = MarkStyle::new();
-    let app_result = App {
-        state: RefCell::new(State {
+    let app_result = Logrok {
+        inner: Arc::new(Mutex::new(LogrokInner {
             exit: false,
             cursor_x: 0,
             cursor_y: 0,
@@ -1908,11 +1904,11 @@ fn main() -> Result<()> {
             status_message: None,
             plines: Vec::new(),
             line_indexes: Vec::new(),
-        }),
-        render_cursor: RefCell::new((0, 0)),
-        indent_chars: indent.chars().count() as u16,
-        indent,
-        help: build_help(),
+            render_cursor: (0, 0),
+            indent_chars: indent.chars().count() as u16,
+            indent,
+            help: build_help(),
+        })),
     }.run(&mut terminal);
     // move to sane position in case the terminal does not have an altscreen
     let size = terminal.size()?;

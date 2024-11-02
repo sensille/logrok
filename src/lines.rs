@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 use std::ffi::OsStr;
 use bitvec::prelude::*;
 use clog::prelude::*;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::log::LogKeys::LI;
 use crate::cache::*;
@@ -75,7 +75,7 @@ impl Lines {
 
     // points somewhere into a line, resolves that line to a split and a line ix
     fn resolve_line_id(&self, line_id: LineId, patterns: &PatternSet)
-        -> Option<(SplitId, LineId, Rc<Split>, usize)>
+        -> Option<(SplitId, LineId, Arc<Split>, usize)>
     {
         let split_id = self.split_cache.find_split(line_id)?;
         let (split_start, _) = self.split_cache.get_split(split_id)?;

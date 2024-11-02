@@ -2,7 +2,7 @@ use anyhow::Result;
 use lru::LruCache;
 use std::ffi::OsStr;
 use std::num::NonZeroUsize;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
@@ -43,7 +43,7 @@ pub struct Split {
 
 #[derive(Debug)]
 pub struct SplitCacheInner {
-    lru: LruCache<SplitId, Rc<Split>>,
+    lru: LruCache<SplitId, Arc<Split>>,
     file_search: FileSearch,
     file: File,
 }
@@ -100,7 +100,7 @@ impl SplitCache {
         inner.file_search.set_current_split(split_id);
     }
 
-    pub fn get(&self, split_id: SplitId, patterns: &PatternSet) -> Result<Rc<Split>> {
+    pub fn get(&self, split_id: SplitId, patterns: &PatternSet) -> Result<Arc<Split>> {
         lD3!(CA, "get split {}", split_id);
         let mut inner = self.inner.borrow_mut();
         let mut split = match inner.lru.pop(&split_id) {
@@ -112,7 +112,7 @@ impl SplitCache {
             }
             Some(split) => {
                 lD3!(CA, "cache hit, but wrong pattern_seq");
-                Rc::into_inner(split).unwrap()
+                Arc::into_inner(split).unwrap()
             }
             None => {
                 lD3!(CA, "cache miss");
@@ -183,7 +183,7 @@ impl SplitCache {
         split.search_lines = search_lines;
         split.hidden_lines = hidden_lines;
 
-        let split = Rc::new(split);
+        let split = Arc::new(split);
 
         lD5!(CA, "split scan done");
 

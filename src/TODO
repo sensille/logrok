@@ -48,7 +48,7 @@
 [ ] load splits in background
 [x] match bug: extend right on "116", second one matches the pattern
 [x] search bug: next skips next match if it is back-to-back, eg '00' in '000000000'
-[ ] state/self aufräumen
+[x] cleanup state/self
 [x] when switching to other display mode and cursor is not moved, switching back should end up on
     the same line
 [x] calculate marker area for file offset from filelen
