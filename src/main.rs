@@ -153,6 +153,7 @@ struct State {
     search_match_type: MatchType,
     mark_style: MarkStyle,
     display_offset: bool,
+    display_offset_len: usize,
     before_filter_pos: HashMap<usize, (LineId, usize, i16)>,
     display_help: bool,
     status_message: Option<String>,
@@ -198,7 +199,6 @@ struct LineIndex {
 struct App {
     state: RefCell<State>,
     render_cursor: RefCell<(u16, u16)>,
-    event: Option<Event>,
     indent: String,
     indent_chars: u16,
     help: Help,
@@ -206,9 +206,12 @@ struct App {
 
 impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        self.process_event(area, None);
         while !self.state.borrow().exit {
             terminal.draw(|frame| self.draw(frame))?;
-            let quit = self.poll_events()?;
+            let quit = self.poll_events(terminal)?;
             if quit {
                 break;
             }
@@ -221,9 +224,8 @@ impl App {
         frame.set_cursor_position((self.render_cursor.borrow().0 , self.render_cursor.borrow().1));
     }
 
-    fn poll_events(&mut self) -> io::Result<bool> {
+    fn poll_events(&mut self, terminal: &mut DefaultTerminal) -> io::Result<bool> {
         let event = event::read()?;
-        self.event = None;
         lD1!(MA, "event: {:?}", event);
         match event {
             // it's important to check that the event is a key press event as
@@ -232,22 +234,23 @@ impl App {
                 if key_event.code == KeyCode::Char('q') {
                     self.exit();
                     return Ok(true);
-                } else {
-                    self.event = Some(event);
                 }
             }
-            Event::Resize(_, _) => self.event = Some(event),
-            _ => {}
+            Event::Resize(_, _) => (),
+            _ => return Ok(false),
         };
+        let size = terminal.size()?;
+        let area = Rect::new(0, 0, size.width, size.height);
+        self.process_event(area, Some(event));
         Ok(false)
     }
 
     // events that don't need the layout or may change the layout
-    fn handle_event_before_layout(&self) -> bool {
-       if let Some(Event::Resize(_, _)) = self.event {
+    fn handle_event_before_layout(&self, event: &Option<Event>) -> bool {
+       if let Some(Event::Resize(_, _)) = event {
             return true;
         }
-       let Some(Event::Key(key_event)) = self.event else {
+       let Some(Event::Key(key_event)) = event else {
             return false;
         };
         if key_event.kind != KeyEventKind::Press {
@@ -269,8 +272,8 @@ impl App {
 
     // events that need the layout. this must not change the layout. It is possible
     // to split an event in both before and after.
-    fn handle_event_after_layout(&self) -> bool {
-       let Some(Event::Key(key_event)) = self.event else {
+    fn handle_event_after_layout(&self, event: &Option<Event>) -> bool {
+       let Some(Event::Key(key_event)) = event else {
             return false;
         };
         if key_event.kind != KeyEventKind::Press {
@@ -354,13 +357,13 @@ impl App {
         }
     }
 
-    fn handle_search_event_before_layout(&self) -> bool {
+    fn handle_search_event_before_layout(&self, _event: &Option<Event>) -> bool {
         return false;
     }
 
-    fn handle_search_event_after_layout(&self) -> bool {
-       lD3!(MA, "search event: {:?}", self.event);
-       let Some(Event::Key(key_event)) = self.event else {
+    fn handle_search_event_after_layout(&self, event: &Option<Event>) -> bool {
+       lD3!(MA, "search event: {:?}", event);
+       let Some(Event::Key(key_event)) = event else {
             return false;
         };
         if key_event.kind != KeyEventKind::Press {
@@ -920,6 +923,8 @@ impl App {
 
     fn offsets(&self) -> bool {
         let mut state = self.state.borrow_mut();
+        let line_id_len = self.state.borrow().lines.last_line_id().to_string().len();
+        state.display_offset_len = line_id_len;
         state.display_offset = !state.display_offset;
 
         return true;
@@ -1319,35 +1324,8 @@ impl App {
         state.display_help = !state.display_help;
         true
     }
-}
 
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        // ignore everything if the area is too small
-        lD3!(MA, "render: area: {}x{} indent_chars {}", area.width, area.height, self.indent_chars);
-        if area.width < self.indent_chars + 3 {
-            Paragraph::new(Text::raw("Window not wide enough"))
-                .alignment(Alignment::Center)
-                .render(area, buf);
-            return;
-        }
-        if area.height < 3 {
-            Paragraph::new(Text::raw("Window not high enough"))
-                .render(area, buf);
-            return;
-        }
-
-        /*
-         * Handle key events part 1
-         */
-        let mut recalc_lines = false;
-        //idea: don't keep first line, but reference line, together with a position on screen
-        if self.state.borrow().in_search_input {
-            recalc_lines |= self.handle_search_event_before_layout();
-        } else {
-            recalc_lines |= self.handle_event_before_layout();
-        }
-
+    fn calculate_layout(&self, area: Rect) -> [Rect; 5] {
         /*
          * calculate layout
          */
@@ -1372,12 +1350,29 @@ impl Widget for &App {
                 .spacing(0)
                 .areas(main_area);
 
+        [main_area, log_area, marker_area, input_area, status_area]
+    }
+
+    fn process_event(&self, area: Rect, event: Option<Event>) {
+        let [_, log_area, _, _, _] = self.calculate_layout(area);
+
+        /*
+         * Handle key events part 1
+         */
+        let mut recalc_lines = false;
+        //idea: don't keep first line, but reference line, together with a position on screen
+        if self.state.borrow().in_search_input {
+            recalc_lines |= self.handle_search_event_before_layout(&event);
+        } else {
+            recalc_lines |= self.handle_event_before_layout(&event);
+        }
+
         /*
          * calculate cursor position on area change
          */
         let mut state = self.state.borrow_mut();
         if log_area.width != state.area_width || log_area.height != state.area_height {
-            lD3!(MA, "render: area change: {}x{} -> {}x{}",
+            lD3!(MA, "process: area change: {}x{} -> {}x{}",
                 state.area_width, state.area_height, log_area.width, log_area.height);
             if let Some((pos, ix, part)) = self.resolve_cursor_position(&mut state) {
                 if let Some(pos) = pos {
@@ -1413,9 +1408,9 @@ impl Widget for &App {
          * Handle key events part 2
          */
         if self.state.borrow().in_search_input {
-            recalc_lines |= self.handle_search_event_after_layout();
+            recalc_lines |= self.handle_search_event_after_layout(&event);
         } else {
-            recalc_lines |= self.handle_event_after_layout();
+            recalc_lines |= self.handle_event_after_layout(&event);
         }
 
         /*
@@ -1465,6 +1460,27 @@ impl Widget for &App {
                 }
             }
         }
+    }
+}
+
+impl Widget for &App {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // ignore everything if the area is too small
+        lD3!(MA, "render: area: {}x{} indent_chars {}", area.width, area.height, self.indent_chars);
+        if area.width < self.indent_chars + 3 {
+            Paragraph::new(Text::raw("Window not wide enough"))
+                .alignment(Alignment::Center)
+                .render(area, buf);
+            return;
+        }
+        if area.height < 3 {
+            Paragraph::new(Text::raw("Window not high enough"))
+                .render(area, buf);
+            return;
+        }
+
+        let [main_area, log_area, marker_area, input_area, status_area] =
+            self.calculate_layout(area);
 
         /*
          * render lines and build index array
@@ -1519,6 +1535,7 @@ impl Widget for &App {
         }
 
         lD3!(MA, "render: patterns: {:?}", state.patterns);
+
         /*
          * render marker area
          */
@@ -1542,6 +1559,7 @@ impl Widget for &App {
                 spans.push(Span::raw("  "));
             };
             if state.display_offset && index.line_part == 0 {
+                let line_id_len = state.display_offset_len;
                 spans.push(Span::raw(format!("{:line_id_len$} ", line.line_id)).green());
             }
             markers.push(Line::from(spans));
@@ -1884,6 +1902,7 @@ fn main() -> Result<()> {
             display_mode: DisplayMode::Normal,
             mark_style,
             display_offset: false,
+            display_offset_len: 0,
             in_search_input: false,
             before_filter_pos: HashMap::new(),
             current_search: String::new(),
@@ -1896,7 +1915,6 @@ fn main() -> Result<()> {
             line_indexes: Vec::new(),
         }),
         render_cursor: RefCell::new((0, 0)),
-        event: None,
         indent_chars: indent.chars().count() as u16,
         indent,
         help: build_help(),
