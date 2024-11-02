@@ -5,6 +5,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     prelude::*,
     buffer::Buffer,
+    buffer::Cell,
     layout::{Alignment, Rect},
     style::Stylize,
     text::Line,
@@ -164,6 +165,9 @@ struct LogrokInner {
     // the fields below are rebuilt on each render
     plines: Vec<ProcessedLine>,
     line_indexes: Vec<LineIndex>,
+    // progress hack
+    input_area: Rect,
+    input_content: Vec<Cell>,
 }
 
 #[derive(Debug, Clone)]
@@ -1561,6 +1565,14 @@ impl LogrokInner {
                 (log_area.x + self.cursor_x as u16, log_area.y + self.cursor_y as u16);
         }
 
+        // XXX progress hack: save contents of input area
+        let mut input_content = Vec::new();
+        for x in 0..input_area.width {
+            input_content.push(buf.cell((input_area.x + x, input_area.y)).unwrap().clone());
+        }
+        self.input_area = input_area;
+        self.input_content = input_content;
+
         if self.display_help && main_area.height > 4 {
             let max_area = Rect::new(2, 2, main_area.width - 4, main_area.height - 4);
             let _max_width = max_area.width as usize;
@@ -1610,6 +1622,7 @@ impl Logrok {
         let (tx_req, rx_req) = std::sync::mpsc::channel();
         let (tx_rsp, rx_rsp) = std::sync::mpsc::channel();
         let s = self.clone();
+        let progress = Progress::new();
         let jh = std::thread::spawn(move || {
             loop {
                 let Ok((event, area)) = rx_req.recv() else {
@@ -1623,13 +1636,27 @@ impl Logrok {
         let mut inner = self.inner.lock().unwrap();
         inner.process_event(Self::area(terminal)?, None);
         while !inner.exit {
+            let input_area = inner.input_area; // XXX progress hack
             drop(inner);
             terminal.draw(|frame| self.draw(frame))?;
             let event = self.poll_events()?;
             let area = Self::area(terminal)?;
             tx_req.send((event, area)).unwrap();
-            rx_rsp.recv()?;
+            let mut need_restore = false;
+            loop {
+                match rx_rsp.recv_timeout(std::time::Duration::from_millis(200)) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        progress.draw(input_area, terminal)?;
+                        need_restore = true;
+                    },
+                    Err(e) => return Err(e.into()),
+                    Ok(()) => break,
+                }
+            }
             inner = self.inner.lock().unwrap();
+            if need_restore {
+                progress.restore(terminal, input_area, &inner.input_content)?;
+            }
             if inner.exit {
                 break;
             }
@@ -1665,6 +1692,57 @@ impl Widget for &Logrok {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut inner = self.inner.lock().unwrap();
         inner.render(area, buf)
+    }
+}
+
+struct Progress {
+
+}
+
+impl Progress {
+    fn new() -> Self {
+        Self {}
+    }
+
+    fn draw(&self, area: Rect, terminal: &mut DefaultTerminal) -> Result<()> {
+        terminal.hide_cursor()?;
+        let b = terminal.backend_mut();
+        let message = "Processing...";
+        let mut spans = Vec::new();
+            spans.push(Span::raw(message).blue().bold());
+        let input = Line::from(spans);
+
+        let fake_area = Rect::new(0, 0, area.width, 1);
+        let mut fake_buf = Buffer::empty(fake_area);
+        Paragraph::new(input)
+            .style(Style::default().fg(Color::Black).bg(Color::Gray))
+            .alignment(Alignment::Left)
+            .render(fake_area, &mut fake_buf);
+
+        let mut content = Vec::new();
+        for x in 0..area.width {
+            let cell = fake_buf.cell((fake_area.x + x, fake_area.y)).unwrap().clone();
+            content.push((area.x + x, area.y, cell));
+        }
+        b.draw(content.iter().map(|(x, y, c)| (*x, *y, c)))?;
+        ratatui::backend::Backend::flush(b)?;
+
+        Ok(())
+    }
+
+    fn restore(&self, terminal: &mut DefaultTerminal, area: Rect, contents: &Vec<Cell>)
+        -> Result<()>
+    {
+        let b = terminal.backend_mut();
+        let mut cont = Vec::new();
+        for x in 0..area.width {
+            cont.push((area.x + x, area.y, &contents[x as usize]));
+        }
+        b.draw(cont.into_iter())?;
+        ratatui::backend::Backend::flush(b)?;
+        terminal.show_cursor()?;
+
+        Ok(())
     }
 }
 
@@ -1908,6 +1986,8 @@ fn main() -> Result<()> {
             indent_chars: indent.chars().count() as u16,
             indent,
             help: build_help(),
+            input_area: Rect::default(),
+            input_content: Vec::new(),
         })),
     }.run(&mut terminal);
     // move to sane position in case the terminal does not have an altscreen
