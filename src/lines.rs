@@ -90,7 +90,8 @@ impl Lines {
         Some((split_id, split_start, split, line_ix))
     }
 
-    pub fn get(&self, line_id: LineId, patterns: &PatternSet) -> Option<ProcessedLine>
+    pub fn get(&self, line_id: LineId, patterns: &PatternSet, crop_chars: Option<usize>)
+        -> Option<ProcessedLine>
     {
         let (_, split_start, split, line_ix) = self.resolve_line_id(line_id, patterns)?;
 
@@ -102,7 +103,7 @@ impl Lines {
 
         // XXX handle/convert non-utf8 lines
         let line = String::from_utf8(split.buf[rel_start..rel_end].to_vec()).unwrap();
-        let (pline, matches) = patterns.process_line(&line);
+        let (pline, matches) = patterns.process_line(&line, crop_chars);
 
         return Some(ProcessedLine {
             line_id: split_start + rel_start as LineId,

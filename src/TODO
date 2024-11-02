@@ -55,12 +55,13 @@
 [ ] histogram of line (too slow?)
 [ ] scroll in help/modal or 2 column layout
 [ ] mouse support
-[ ] ?make render incremental, when a split is not yet ready, return a channel to wait on instead
+[-] ?make render incremental, when a split is not yet ready, return a channel to wait on instead
     (or pass in a channel, whatever is easier)
     show some progress on long running search? (hard?) while get_split blocks? futures might help?
     only relevant for very very large files or in debug mode
     idea: handle key events outside of render. get terminal size from resize events and initially.
     move calc_layout to function, call in render and in handle event
+[x] progress instead of incremental render (hard, but easier)
 [x] move line under cursor also on unmark / tag/untag hide/unhide
 [x] mark on search result: convert search to mark? yes
 [x] when there is still room on the screen and we are not on the start of the displayable line,
@@ -79,7 +80,7 @@
 [ ] set indent column
 
 
-order: incremental render, more colors, undo
+order: overlong lines, undo, config file, save state, more colors, tokens
 
 Description:
 you have millions and millions of debug log lines, with the traces of a bug buried in them.

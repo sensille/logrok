@@ -177,16 +177,23 @@ impl PatternSet {
         self.hidden_re.clone()
     }
 
-    pub fn process_line(&self, line: &str) -> (Vec<StyledChar>, Vec<PatternId>) {
+    pub fn process_line(&self, line: &str, crop_chars: Option<usize>)
+        -> (Vec<StyledChar>, Vec<PatternId>)
+    {
         let mut pline = Vec::new();
         let mut matches = BTreeSet::new();
 
+        let mut bytes = 0;
         for c in line.chars() {
             pline.push(StyledChar {
                 c,
                 style: self.default_style.clone(),
                 matches: None,
             });
+            bytes += c.len_utf8();
+            if pline.len() >= crop_chars.unwrap_or(usize::MAX) {
+                break;
+            }
         }
         if pline.last().map(|c| c.c) == Some('\n') {
             pline.pop();
@@ -194,9 +201,15 @@ impl PatternSet {
         let mut match_num = 0;
         for &id in &self.sort_by_len {
             let pattern = self.get(id);
-            for c in pattern.re.captures_iter(line) {
+            // only match what we have in pline, plus the pattern length so we can catch
+            // a pattern match over the end
+            let match_len = (bytes + pattern.pattern.len()).min(line.len());
+            for c in pattern.re.captures_iter(&line[..match_len]) {
                 let m = c.get(1).unwrap();
                 for i in m.start() .. m.end() {
+                    if i >= pline.len() {
+                        break;
+                    }
                     pline[i].style = pattern.style.clone();
                     if let Some(ref mut matches) = pline[i].matches {
                         matches.push((id, i));

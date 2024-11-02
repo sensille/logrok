@@ -158,6 +158,7 @@ struct LogrokInner {
     before_filter_pos: HashMap<usize, (LineId, usize, i16)>,
     display_help: bool,
     status_message: Option<String>,
+    overlong_fold: HashMap<LineId, usize>,       // crop lines to this many display lines
     render_cursor: (u16, u16),
     indent: String,
     indent_chars: u16,
@@ -290,6 +291,7 @@ impl LogrokInner {
                 KeyCode::Char('G') => self.move_end(),
                 KeyCode::Char('0') => self.start_of_line(),
                 KeyCode::Char('$') => self.end_of_line(),
+                KeyCode::Char('o') => self.fold_line(),
                 KeyCode::Char('t') => self.tag_hide(true, PatternMode::Tagging),
                 KeyCode::Char('T') => self.tag_hide(false, PatternMode::Tagging),
                 KeyCode::Char('f') => self.display(Direction::Forward),
@@ -414,7 +416,7 @@ impl LogrokInner {
         lD3!(MA, "move_end: last_line_id: {}", last_line_id);
         self.first_line = last_line_id;
 
-        let pline = self.lines.get(last_line_id, &self.patterns).unwrap();
+        let pline = self.get_line(last_line_id).unwrap();
         let parts = self.line_parts(&pline, self.area_width) as usize;
         self.move_line_under_cursor(last_line_id, parts - 1);
 
@@ -533,7 +535,7 @@ impl LogrokInner {
         self.first_line = line_id;
         self.lines.set_current_line(self.first_line);
 
-        let pline = self.lines.get(line_id, &self.patterns).unwrap();
+        let pline = self.get_line(line_id).unwrap();
         let linelen = pline.chars.len() as u16;
         if linelen > self.area_width {
             self.line_offset = (linelen - self.area_width) as usize /
@@ -563,6 +565,20 @@ impl LogrokInner {
         self.cursor_y = y as i16;
 
         false
+    }
+
+    fn fold_line(&mut self) -> bool {
+        let Some((_, line_ix, _)) = self.resolve_cursor_position() else {
+            return false;
+        };
+        let line_id = self.plines[line_ix].line_id;
+        if self.overlong_fold.get(&line_id).is_some() {
+            self.overlong_fold.remove(&line_id);
+        } else {
+            self.overlong_fold.insert(line_id, self.area_height as usize / 2);
+        }
+
+        true
     }
 
     // return : None if cursor is not on a line
@@ -894,6 +910,17 @@ impl LogrokInner {
         Some(id)
     }
 
+    fn get_line(&self, line_id: LineId) -> Option<ProcessedLine> {
+        let crop_chars = if let Some(&crop_lines) = self.overlong_fold.get(&line_id) {
+            assert!(crop_lines >= 1);
+            Some(self.area_width as usize + (crop_lines - 1)
+                * (self.area_width - self.indent_chars) as usize)
+        } else {
+            None
+        };
+        self.lines.get(line_id, &self.patterns, crop_chars)
+    }
+
     fn move_line_under_cursor(&mut self, line_id: LineId, line_part: usize) {
         // we want line_id in display line line_ix. find lines backwards to find a suitable
         // first_line and offset
@@ -910,7 +937,7 @@ impl LogrokInner {
                 lD2!(MA, "can't get back any further");
                 break;
             };
-            let pline = self.lines.get(prev_line_id, &self.patterns).unwrap();
+            let pline = self.get_line(prev_line_id).unwrap();
             first_line = prev_line_id;
             let parts = self.line_parts(&pline, self.area_width) as isize;
             lines_to_go_back -= parts;
@@ -1131,7 +1158,7 @@ impl LogrokInner {
         };
         let line_id = self.plines[ix].line_id;
         // don't take line from cache, as the matches aren't up-to-date here
-        let pline = self.lines.get(line_id, &self.patterns).unwrap();
+        let pline = self.get_line(line_id).unwrap();
         lD2!(MA, "search_next: pos: {} ix: {} part: {} line: {}", pos, ix, part, pline.line_id);
         if let Some(match_pos) = self.get_search_match_forward(&pline, pos, true) {
             lD2!(MA, "do_search: found match at {}", match_pos);
@@ -1158,7 +1185,7 @@ impl LogrokInner {
             return false;
         };
 
-        let pline = self.lines.get(line_id, &self.patterns).unwrap();
+        let pline = self.get_line(line_id).unwrap();
         lD10!(MA, "current line: {} {:?}", line_id, pline);
         let match_pos = self.get_search_match_forward(&pline, 0, false).unwrap();
 
@@ -1201,7 +1228,7 @@ impl LogrokInner {
         };
         let line_id = self.plines[ix].line_id;
         // don't take line from cache, as the matches aren't up-to-date here
-        let pline = self.lines.get(line_id, &self.patterns).unwrap();
+        let pline = self.get_line(line_id).unwrap();
         lD2!(MA, "search_prev: pos: {} ix: {} part: {} line: {}", pos, ix, part, pline.line_id);
         if let Some(match_pos) = self.get_search_match_backward(&pline, pos, true) {
             lD2!(MA, "do_search: found match at {}", match_pos);
@@ -1226,7 +1253,7 @@ impl LogrokInner {
             return false;
         };
 
-        let pline = self.lines.get(line_id, &self.patterns).unwrap();
+        let pline = self.get_line(line_id).unwrap();
         lD10!(MA, "current line: {} {:?}", line_id, pline);
         let len = pline.chars.len();
         let match_pos = self.get_search_match_backward(&pline, len - 1, false).unwrap();
@@ -1360,7 +1387,7 @@ impl LogrokInner {
                 lD5!(MA, "render: curr_line_id: {} num_lines {} skip {}",
                     curr_line_id, num_lines, skip);
                 let mode = self.display_mode;
-                let pline = self.lines.get(curr_line_id, &self.patterns).unwrap();
+                let pline = self.get_line(curr_line_id).unwrap();
                 let next_line_id = self.lines.next_line(SearchType::Tag, curr_line_id,
                     &self.patterns, mode, false);
                 state_lines.push(pline.clone());
@@ -1482,8 +1509,8 @@ impl LogrokInner {
                 line.matches.iter().any(|&id| self.patterns.is_tagging(id))
             {
                 spans.push(Span::raw("* "));
-            } else {
-                spans.push(Span::raw("  "));
+            } else if index.line_part > 0 && self.overlong_fold.contains_key(&line.line_id) {
+                spans.push(Span::raw("o "));
             };
             if self.display_offset && index.line_part == 0 {
                 let line_id_len = self.display_offset_len;
@@ -1775,6 +1802,7 @@ fn build_help() -> Help {
            f: show All->Normal->Tagged->Manual
            d: show Manual->Tagged->Normal->All
            @: toggle display of line offsets
+           o: fold current (overlong) line
 
            Various
            q: quit
@@ -1878,6 +1906,9 @@ fn build_help() -> Help {
         Line::from(vec![
             Span::styled("@", key),
             Span::styled(": toggle display of line offsets", text)]),
+        Line::from(vec![
+            Span::styled("o", key),
+            Span::styled(": fold current (overlong) line", text)]),
         Line::from(vec![]),
         Line::from(vec![Span::styled("Various", heading)]).alignment(Alignment::Center),
         Line::from(vec![
@@ -1975,6 +2006,7 @@ fn main() -> Result<()> {
             render_cursor: (0, 0),
             indent_chars: indent.chars().count() as u16,
             indent,
+            overlong_fold: HashMap::new(),
             help: build_help(),
             input_area: Rect::default(),
             input_content: Vec::new(),
