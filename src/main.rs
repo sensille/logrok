@@ -205,16 +205,17 @@ struct App {
 }
 
 impl App {
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub fn area(terminal: &DefaultTerminal) -> Result<Rect> {
         let size = terminal.size()?;
-        let area = Rect::new(0, 0, size.width, size.height);
-        self.process_event(area, None);
+        Ok(Rect::new(0, 0, size.width, size.height))
+    }
+
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+        self.process_event(Self::area(terminal)?, None);
         while !self.state.borrow().exit {
             terminal.draw(|frame| self.draw(frame))?;
-            let quit = self.poll_events(terminal)?;
-            if quit {
-                break;
-            }
+            let event = self.poll_events()?;
+            self.process_event(Self::area(terminal)?, Some(event));
         }
         Ok(())
     }
@@ -224,25 +225,19 @@ impl App {
         frame.set_cursor_position((self.render_cursor.borrow().0 , self.render_cursor.borrow().1));
     }
 
-    fn poll_events(&mut self, terminal: &mut DefaultTerminal) -> io::Result<bool> {
-        let event = event::read()?;
-        lD1!(MA, "event: {:?}", event);
-        match event {
-            // it's important to check that the event is a key press event as
-            // crossterm also emits key release and repeat events on Windows.
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                if key_event.code == KeyCode::Char('q') {
-                    self.exit();
-                    return Ok(true);
-                }
-            }
-            Event::Resize(_, _) => (),
-            _ => return Ok(false),
+    fn poll_events(&mut self) -> io::Result<Event> {
+        let event = loop {
+            let event = event::read()?;
+            lD1!(MA, "event: {:?}", event);
+            match event {
+                // it's important to check that the event is a key press event as
+                // crossterm also emits key release and repeat events on Windows.
+                Event::Key(_) |
+                Event::Resize(_, _) => break event,
+                _ => (),
+            };
         };
-        let size = terminal.size()?;
-        let area = Rect::new(0, 0, size.width, size.height);
-        self.process_event(area, Some(event));
-        Ok(false)
+        Ok(event)
     }
 
     // events that don't need the layout or may change the layout
@@ -265,6 +260,7 @@ impl App {
         } else {
             match key_event.code {
                 KeyCode::Char('@') => self.offsets(),
+                KeyCode::Char('q') => self.exit(),
                 _ => false,
             }
         }
@@ -311,7 +307,6 @@ impl App {
             true
         } else {
             match key_event.code {
-                KeyCode::Char('q') => self.exit(),
                 KeyCode::Char('j') => self.move_cursor(0, 1),
                 KeyCode::Char('k') => self.move_cursor(0, -1),
                 KeyCode::Char('h') => self.move_cursor(-1, 0),

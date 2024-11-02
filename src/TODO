@@ -76,6 +76,7 @@
 [x] display shorter match over longer match
 [x] fiter "nothing to display", don't change mode
 [x] clog to file
+[ ] set indent column
 
 
 order: incremental render, more colors, undo
