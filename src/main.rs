@@ -292,6 +292,8 @@ impl LogrokInner {
                 KeyCode::Char('0') => self.start_of_line(),
                 KeyCode::Char('$') => self.end_of_line(),
                 KeyCode::Char('o') => self.fold_line(),
+                KeyCode::Char('+') => self.fold_more_less(true),
+                KeyCode::Char('-') => self.fold_more_less(false),
                 KeyCode::Char('t') => self.tag_hide(true, PatternMode::Tagging),
                 KeyCode::Char('T') => self.tag_hide(false, PatternMode::Tagging),
                 KeyCode::Char('f') => self.display(Direction::Forward),
@@ -576,6 +578,22 @@ impl LogrokInner {
             self.overlong_fold.remove(&line_id);
         } else {
             self.overlong_fold.insert(line_id, self.area_height as usize / 2);
+        }
+
+        true
+    }
+
+    fn fold_more_less(&mut self, more: bool) -> bool {
+        let Some((_, line_ix, _)) = self.resolve_cursor_position() else {
+            return false;
+        };
+        let line_id = self.plines[line_ix].line_id;
+        if let Some(v) = self.overlong_fold.get_mut(&line_id) {
+            if more {
+                *v += 1;
+            } else if *v > 1 {
+                *v -= 1;
+            }
         }
 
         true
@@ -1803,6 +1821,7 @@ fn build_help() -> Help {
            d: show Manual->Tagged->Normal->All
            @: toggle display of line offsets
            o: fold current (overlong) line
+           +/-: increase/decrease fold size
 
            Various
            q: quit
@@ -1909,6 +1928,10 @@ fn build_help() -> Help {
         Line::from(vec![
             Span::styled("o", key),
             Span::styled(": fold current (overlong) line", text)]),
+        Line::from(vec![
+            Span::styled("+", key), sep.clone(),
+            Span::styled("-", key),
+            Span::styled(": in-/decrease fold size", text)]),
         Line::from(vec![]),
         Line::from(vec![Span::styled("Various", heading)]).alignment(Alignment::Center),
         Line::from(vec![
