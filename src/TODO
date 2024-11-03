@@ -23,8 +23,8 @@
 [x] search wrap
 [x] filter bug: when enabling filter while first line is not filtered, it will stay displayed until
     the next event
-[ ] overlong line is slow
-[ ] always collapse overlong lines. 'o' to switch to scrolling within line. expand/shrink.
+[x] overlong line is slow
+[x] always collapse overlong lines. 'o' to switch to scrolling within line. expand/shrink.
     search results scroll to the first match, tag/mark ditto
 [ ] substitute pattern
 [ ] insert blank lines

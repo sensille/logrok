@@ -158,7 +158,7 @@ struct LogrokInner {
     before_filter_pos: HashMap<usize, (LineId, usize, i16)>,
     display_help: bool,
     status_message: Option<String>,
-    overlong_fold: HashMap<LineId, usize>,       // crop lines to this many display lines
+    overlong_fold: HashMap<LineId, (usize, usize)>,       // crop lines to this many display lines
     render_cursor: (u16, u16),
     indent: String,
     indent_chars: u16,
@@ -225,6 +225,8 @@ impl LogrokInner {
                 KeyCode::Char('h') => self.help(),
                 _ => false,
             }
+        } else if key_event.modifiers.contains(KeyModifiers::ALT) {
+            false
         } else {
             match key_event.code {
                 KeyCode::Char('@') => self.offsets(),
@@ -273,6 +275,27 @@ impl LogrokInner {
                 }
             }
             true
+        } else if key_event.modifiers.contains(KeyModifiers::ALT) {
+            let area_height = self.area_height;
+            let cnt = match key_event.code {
+                KeyCode::Char('e') => 1,
+                KeyCode::Char('d') => area_height as usize / 2,
+                KeyCode::Char('f') => area_height as usize,
+                _ => 0,
+            };
+            if cnt > 0 {
+                self.scroll_fold_up_down(cnt, Direction::Forward);
+            }
+            let cnt = match key_event.code {
+                KeyCode::Char('y') => 1,
+                KeyCode::Char('u') => area_height as usize / 2,
+                KeyCode::Char('b') => area_height as usize,
+                _ => 0,
+            };
+            if cnt > 0 {
+                self.scroll_fold_up_down(cnt, Direction::Backward);
+            }
+            true
         } else {
             match key_event.code {
                 KeyCode::Char('j') => self.move_cursor(0, 1),
@@ -291,7 +314,7 @@ impl LogrokInner {
                 KeyCode::Char('G') => self.move_end(),
                 KeyCode::Char('0') => self.start_of_line(),
                 KeyCode::Char('$') => self.end_of_line(),
-                KeyCode::Char('o') => self.fold_line(),
+                KeyCode::Char('F') => self.fold_line(),
                 KeyCode::Char('+') => self.fold_more_less(true),
                 KeyCode::Char('-') => self.fold_more_less(false),
                 KeyCode::Char('t') => self.tag_hide(true, PatternMode::Tagging),
@@ -577,7 +600,8 @@ impl LogrokInner {
         if self.overlong_fold.get(&line_id).is_some() {
             self.overlong_fold.remove(&line_id);
         } else {
-            self.overlong_fold.insert(line_id, self.area_height as usize / 2);
+            let parts = self.line_parts(&self.plines[line_ix], self.area_width) as usize;
+            self.overlong_fold.insert(line_id, (parts.min(self.area_height as usize / 2), 0));
         }
 
         true
@@ -588,15 +612,45 @@ impl LogrokInner {
             return false;
         };
         let line_id = self.plines[line_ix].line_id;
-        if let Some(v) = self.overlong_fold.get_mut(&line_id) {
-            if more {
-                *v += 1;
-            } else if *v > 1 {
-                *v -= 1;
+        let full_line = self.lines.get(line_id, &self.patterns, None).unwrap();
+        let parts = self.line_parts(&full_line, self.area_width) as usize;
+        if let Some((lines, _)) = self.overlong_fold.get_mut(&line_id) {
+            if more && *lines < parts {
+                *lines += 1;
+            } else if !more && *lines > 2 {
+                *lines -= 1;
             }
+            return true;
         }
 
-        true
+        false
+    }
+
+    fn scroll_fold_up_down(&mut self, cnt: usize, direction: Direction) -> bool {
+        let Some((_, line_ix, _)) = self.resolve_cursor_position() else {
+            return false;
+        };
+        let line_id = self.plines[line_ix].line_id;
+        let full_line = self.lines.get(line_id, &self.patterns, None).unwrap();
+        let parts = self.line_parts(&full_line, self.area_width) as usize;
+        if parts == 1 {
+            return false;
+        }
+        if let Some((lines, first)) = self.overlong_fold.get_mut(&line_id) {
+            if direction == Direction::Forward {
+                for _ in 0..cnt {
+                    if *first + *lines >= parts {
+                        break;
+                    }
+                    *first += 1;
+                }
+            } else {
+                *first = first.saturating_sub(cnt);
+            }
+            return true;
+        }
+
+        false
     }
 
     // return : None if cursor is not on a line
@@ -929,14 +983,29 @@ impl LogrokInner {
     }
 
     fn get_line(&self, line_id: LineId) -> Option<ProcessedLine> {
-        let crop_chars = if let Some(&crop_lines) = self.overlong_fold.get(&line_id) {
-            assert!(crop_lines >= 1);
-            Some(self.area_width as usize + (crop_lines - 1)
-                * (self.area_width - self.indent_chars) as usize)
-        } else {
-            None
+        let Some(&(lines, mut first)) = self.overlong_fold.get(&line_id) else {
+            return self.lines.get(line_id, &self.patterns, None);
         };
-        self.lines.get(line_id, &self.patterns, crop_chars)
+        assert!(lines >= 1);
+        let width = self.area_width as usize;
+        let indented = self.area_width as usize - self.indent_chars as usize;
+
+        let crop_chars = Some(width + (lines + first - 1) * indented);
+        let mut line = self.lines.get(line_id, &self.patterns, crop_chars)?;
+        if first == 0 {
+            return Some(line);
+        }
+        // lines - total number of lines to show, including the first line
+        // first - number of lines to skip after the first line
+        let parts = self.line_parts(&line, self.area_width) as usize;
+        if first + lines > parts {
+            first = parts - lines;
+        }
+        // cut out the first /first/ indented lines
+        let cut_size = first * indented;
+        line.chars.drain(width .. width + cut_size);
+
+        Some(line)
     }
 
     fn move_line_under_cursor(&mut self, line_id: LineId, line_part: usize) {
@@ -1528,7 +1597,14 @@ impl LogrokInner {
             {
                 spans.push(Span::raw("* "));
             } else if index.line_part > 0 && self.overlong_fold.contains_key(&line.line_id) {
-                spans.push(Span::raw("o "));
+                let (lines, first) = self.overlong_fold.get(&line.line_id).unwrap();
+                if index.line_part == 1 && *first > 0 {
+                    spans.push(Span::raw("F-"));
+                } else if index.line_part == *lines - 1 && line.cropped {
+                    spans.push(Span::raw("F+"));
+                } else {
+                    spans.push(Span::raw("F "));
+                }
             };
             if self.display_offset && index.line_part == 0 {
                 let line_id_len = self.display_offset_len;
@@ -1800,6 +1876,7 @@ fn build_help() -> Help {
            ^b/^f: scroll up/down a page
            g/G: go to start/end of file
            0/$: go to start/end of line
+           alt-e/y/d/u/b/f: scroll folded lines
 
            Marking
            m/M: toggle mark word/WORD under cursor
@@ -1820,7 +1897,7 @@ fn build_help() -> Help {
            f: show All->Normal->Tagged->Manual
            d: show Manual->Tagged->Normal->All
            @: toggle display of line offsets
-           o: fold current (overlong) line
+           F: fold current (overlong) line
            +/-: increase/decrease fold size
 
            Various
@@ -1877,6 +1954,14 @@ fn build_help() -> Help {
             Span::styled("0", key), sep.clone(),
             Span::styled("$", key),
             Span::styled(": go to start/end of line", text)]),
+            Line::from(vec![
+            Span::styled("alt-e", key), sep.clone(),
+            Span::styled("y", key), sep.clone(),
+            Span::styled("d", key), sep.clone(),
+            Span::styled("u", key), sep.clone(),
+            Span::styled("b", key), sep.clone(),
+            Span::styled("f", key),
+            Span::styled(": scroll folded lines", text)]),
         Line::from(vec![]),
         Line::from(vec![Span::styled("Marking", heading)]).alignment(Alignment::Center),
         Line::from(vec![

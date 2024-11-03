@@ -178,12 +178,13 @@ impl PatternSet {
     }
 
     pub fn process_line(&self, line: &str, crop_chars: Option<usize>)
-        -> (Vec<StyledChar>, Vec<PatternId>)
+        -> (Vec<StyledChar>, Vec<PatternId>, bool)
     {
         let mut pline = Vec::new();
         let mut matches = BTreeSet::new();
 
         let mut bytes = 0;
+        let mut cropped = false;
         for c in line.chars() {
             pline.push(StyledChar {
                 c,
@@ -192,6 +193,7 @@ impl PatternSet {
             });
             bytes += c.len_utf8();
             if pline.len() >= crop_chars.unwrap_or(usize::MAX) {
+                cropped = true;
                 break;
             }
         }
@@ -223,6 +225,6 @@ impl PatternSet {
         }
 
         let matches = matches.into_iter().collect();
-        (pline, matches)
+        (pline, matches, cropped)
     }
 }

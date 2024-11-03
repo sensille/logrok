@@ -26,6 +26,7 @@ pub struct ProcessedLine {
     pub line_id: LineId,
     pub chars: Vec<StyledChar>,
     pub matches: Vec<PatternId>,
+    pub cropped: bool,
 }
 
 #[derive(Debug)]
@@ -103,11 +104,12 @@ impl Lines {
 
         // XXX handle/convert non-utf8 lines
         let line = String::from_utf8(split.buf[rel_start..rel_end].to_vec()).unwrap();
-        let (pline, matches) = patterns.process_line(&line, crop_chars);
+        let (pline, matches, cropped) = patterns.process_line(&line, crop_chars);
 
         return Some(ProcessedLine {
             line_id: split_start + rel_start as LineId,
             chars: pline,
+            cropped,
             matches,
         });
     }
