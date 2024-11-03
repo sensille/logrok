@@ -222,6 +222,7 @@ impl Lines {
             if self.skip_split(st, split_id, split_start, split_end, mode) {
                 lD6!(LI, "skipping split {}", split_id);
                 split_id += 1;
+                line_ix = 0;
                 continue;
             }
             let split = self.split_cache.get(split_id, patterns).ok()?;
