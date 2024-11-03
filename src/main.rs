@@ -1,7 +1,7 @@
 use std::io;
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, KeyEvent, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     prelude::*,
     buffer::Buffer,
@@ -134,6 +134,13 @@ enum Direction {
     Backward,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Focus {
+    Main,
+    Search,
+    Help,
+}
+
 #[derive(Debug)]
 struct LogrokInner {
     cursor_x: i16,
@@ -147,7 +154,7 @@ struct LogrokInner {
     patterns: PatternSet,
     lines: Lines,
     display_mode: DisplayMode,
-    in_search_input: bool,
+    focus: Focus,
     current_search: String,
     last_search: Option<PatternId>,
     search_direction: Direction,
@@ -156,12 +163,12 @@ struct LogrokInner {
     display_offset: bool,
     display_offset_len: usize,
     before_filter_pos: HashMap<usize, (LineId, usize, i16)>,
-    display_help: bool,
     status_message: Option<String>,
     overlong_fold: HashMap<LineId, (usize, usize)>,       // crop lines to this many display lines
     render_cursor: (u16, u16),
     indent: String,
     indent_chars: u16,
+    help_first_line: usize,
     help: Help,
     // the fields below are rebuilt on each render
     plines: Vec<ProcessedLine>,
@@ -209,17 +216,7 @@ impl LogrokInner {
     }
 
     // events that don't need the layout or may change the layout
-    fn handle_event_before_layout(&mut self, event: &Option<Event>) -> bool {
-       if let Some(Event::Resize(_, _)) = event {
-            return true;
-        }
-       let Some(Event::Key(key_event)) = event else {
-            return false;
-        };
-        if key_event.kind != KeyEventKind::Press {
-            return false;
-        }
-
+    fn handle_event_before_layout(&mut self, key_event: &KeyEvent) -> bool {
         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
             match key_event.code {
                 KeyCode::Char('h') => self.help(),
@@ -238,14 +235,7 @@ impl LogrokInner {
 
     // events that need the layout. this must not change the layout. It is possible
     // to split an event in both before and after.
-    fn handle_event_after_layout(&mut self, event: &Option<Event>) -> bool {
-       let Some(Event::Key(key_event)) = event else {
-            return false;
-        };
-        if key_event.kind != KeyEventKind::Press {
-            return false;
-        }
-
+    fn handle_event_after_layout(&mut self, key_event: &KeyEvent) -> bool {
         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
             let area_height = self.area_height;
             let cnt = match key_event.code {
@@ -347,19 +337,12 @@ impl LogrokInner {
         }
     }
 
-    fn handle_search_event_before_layout(&mut self, _event: &Option<Event>) -> bool {
+    fn handle_search_event_before_layout(&mut self, _key_event: &KeyEvent) -> bool {
         return false;
     }
 
-    fn handle_search_event_after_layout(&mut self, event: &Option<Event>) -> bool {
-       lD3!(MA, "search event: {:?}", event);
-       let Some(Event::Key(key_event)) = event else {
-            return false;
-        };
-        if key_event.kind != KeyEventKind::Press {
-            return false;
-        }
-
+    fn handle_search_event_after_layout(&mut self, key_event: &KeyEvent) -> bool {
+        lD3!(MA, "search event: {:?}", key_event);
         if key_event.modifiers.contains(KeyModifiers::CONTROL) {
             return false;
         }
@@ -371,20 +354,58 @@ impl LogrokInner {
             }
             KeyCode::Backspace => {
                 if self.current_search.is_empty() {
-                    self.in_search_input = false;
+                    self.focus = Focus::Main;
                     return true;
                 }
                 self.current_search.pop();
                 false
             }
             KeyCode::Enter => {
-                self.in_search_input = false;
+                self.focus = Focus::Main;
                 let input = self.current_search.clone();
                 self.current_search.clear();
                 self.do_search(input);
                 true
             }
             _ => false,
+        }
+    }
+
+    fn handle_help_event_before_layout(&mut self, _key_event: &KeyEvent) -> bool {
+        return false;
+    }
+
+    fn handle_help_event_after_layout(&mut self, key_event: &KeyEvent) -> bool {
+       lD3!(MA, "help event: {:?}", key_event);
+
+        if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+            match key_event.code {
+                KeyCode::Char('h') => {
+                    self.focus = Focus::Main;
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            match key_event.code {
+                KeyCode::Char('q') |
+                KeyCode::Char(' ') |
+                KeyCode::Enter => {
+                    self.focus = Focus::Main;
+                    true
+                }
+                KeyCode::Char('j') => {
+                    self.help_first_line += 1;
+                    true
+                }
+                KeyCode::Char('k') => {
+                    if self.help_first_line > 0 {
+                        self.help_first_line -= 1;
+                    }
+                    true
+                }
+                _ => false,
+            }
         }
     }
 
@@ -1107,7 +1128,7 @@ impl LogrokInner {
     }
 
     fn search(&mut self, direction: Direction, match_type: MatchType) -> bool {
-        self.in_search_input = true;
+        self.focus = Focus::Search;
         self.current_search = String::new();
         self.search_direction = direction;
         self.search_match_type = match_type;
@@ -1378,7 +1399,7 @@ impl LogrokInner {
     }
 
     fn help(&mut self) -> bool {
-        self.display_help = !self.display_help;
+        self.focus = Focus::Help;
         true
     }
 
@@ -1415,13 +1436,23 @@ impl LogrokInner {
         /*
          * Handle key events part 1
          */
-        let mut recalc_lines = false;
-        //idea: don't keep first line, but reference line, together with a position on screen
-        if self.in_search_input {
-            recalc_lines |= self.handle_search_event_before_layout(&event);
+        let focus = self.focus;
+
+        let (key_event, mut recalc_lines) = if let Some(Event::Resize(_, _)) = event {
+            (None, true)
+        } else if let Some(Event::Key(key_event)) = event {
+            if key_event.kind == KeyEventKind::Press {
+                (Some(key_event), match focus {
+                    Focus::Main => self.handle_event_before_layout(&key_event),
+                    Focus::Search => self.handle_search_event_before_layout(&key_event),
+                    Focus::Help => self.handle_help_event_before_layout(&key_event),
+                })
+            } else {
+                (None, false)
+            }
         } else {
-            recalc_lines |= self.handle_event_before_layout(&event);
-        }
+            (None, false)
+        };
 
         /*
          * calculate cursor position on area change
@@ -1461,10 +1492,12 @@ impl LogrokInner {
         /*
          * Handle key events part 2
          */
-        if self.in_search_input {
-            recalc_lines |= self.handle_search_event_after_layout(&event);
-        } else {
-            recalc_lines |= self.handle_event_after_layout(&event);
+        if let Some(key_event) = key_event {
+            recalc_lines |= match focus {
+                Focus::Main => self.handle_event_after_layout(&key_event),
+                Focus::Search => self.handle_search_event_after_layout(&key_event),
+                Focus::Help => self.handle_help_event_after_layout(&key_event),
+            };
         }
 
         /*
@@ -1628,7 +1661,7 @@ impl LogrokInner {
          * render input area
          */
         let mut spans = Vec::new();
-        if self.in_search_input {
+        if self.focus == Focus::Search {
             if self.search_match_type == MatchType::Regex {
                 spans.push(Span::raw("&"));
             } else if self.search_direction == Direction::Forward {
@@ -1686,7 +1719,7 @@ impl LogrokInner {
             .alignment(Alignment::Right)
             .render(status_area, buf);
 
-        if self.in_search_input {
+        if self.focus == Focus::Search {
             self.render_cursor =
                 (input_area.x + self.current_search.len() as u16 + 1, input_area.y);
         } else {
@@ -1702,7 +1735,7 @@ impl LogrokInner {
         self.input_area = input_area;
         self.input_content = input_content;
 
-        if self.display_help && main_area.height > 4 {
+        if self.focus == Focus::Help && main_area.height > 4 {
             let max_area = Rect::new(2, 2, main_area.width - 4, main_area.height - 4);
             let _max_width = max_area.width as usize;
             let max_height = max_area.height as usize;
@@ -1734,7 +1767,8 @@ impl LogrokInner {
                 .style(Style::default().fg(Color::Black).bg(Color::LightGreen));
             let block_inner = block.inner(help_area);
             block.render(help_area, buf);
-            let lines = self.help.help.iter().map(|x| x.clone()).collect::<Vec<_>>();
+            let mut lines = self.help.help.iter().map(|x| x.clone()).collect::<Vec<_>>();
+            lines.drain(0..self.help_first_line);
             Paragraph::new(lines)
                 .render(block_inner, buf);
         }
@@ -2113,12 +2147,11 @@ fn main() -> Result<()> {
             mark_style,
             display_offset: false,
             display_offset_len: 0,
-            in_search_input: false,
+            focus: Focus::Main,
             before_filter_pos: HashMap::new(),
             current_search: String::new(),
             search_direction: Direction::Forward,
             search_match_type: MatchType::Text,
-            display_help: false,
             last_search: None,
             status_message: None,
             plines: Vec::new(),
@@ -2127,6 +2160,7 @@ fn main() -> Result<()> {
             indent_chars: indent.chars().count() as u16,
             indent,
             overlong_fold: HashMap::new(),
+            help_first_line: 0,
             help: build_help(),
             input_area: Rect::default(),
             input_content: Vec::new(),
@@ -2134,7 +2168,8 @@ fn main() -> Result<()> {
     }.run(&mut terminal);
     // move to sane position in case the terminal does not have an altscreen
     let size = terminal.size()?;
-    let _ = terminal.set_cursor_position((0, size.height - 1));
+    terminal.set_cursor_position((0, size.height - 1))?;
+    terminal.show_cursor()?;
     println!("");
     ratatui::restore();
     app_result

@@ -78,9 +78,10 @@
 [x] fiter "nothing to display", don't change mode
 [x] clog to file
 [x] set indent column
+[ ] search and folded lines
 
 
-order: undo, help, config file, save state, more colors, tokens
+order: help, undo, config file, save state, more colors, tokens
 
 Description:
 you have millions and millions of debug log lines, with the traces of a bug buried in them.
