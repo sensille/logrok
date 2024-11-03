@@ -317,6 +317,7 @@ impl LogrokInner {
                 KeyCode::Char('F') => self.fold_line(),
                 KeyCode::Char('+') => self.fold_more_less(true),
                 KeyCode::Char('-') => self.fold_more_less(false),
+                KeyCode::Char('i') => self.set_indent(),
                 KeyCode::Char('t') => self.tag_hide(true, PatternMode::Tagging),
                 KeyCode::Char('T') => self.tag_hide(false, PatternMode::Tagging),
                 KeyCode::Char('f') => self.display(Direction::Forward),
@@ -651,6 +652,13 @@ impl LogrokInner {
         }
 
         false
+    }
+
+    fn set_indent(&mut self) -> bool {
+        self.indent_chars = self.cursor_x as u16;
+        self.indent = vec![" "; self.indent_chars as usize].join("");
+
+        true
     }
 
     // return : None if cursor is not on a line
@@ -1899,6 +1907,7 @@ fn build_help() -> Help {
            @: toggle display of line offsets
            F: fold current (overlong) line
            +/-: increase/decrease fold size
+           i: set indent column
 
            Various
            q: quit
@@ -2017,6 +2026,9 @@ fn build_help() -> Help {
             Span::styled("+", key), sep.clone(),
             Span::styled("-", key),
             Span::styled(": in-/decrease fold size", text)]),
+        Line::from(vec![
+            Span::styled("i", key),
+            Span::styled(": set indent column", text)]),
         Line::from(vec![]),
         Line::from(vec![Span::styled("Various", heading)]).alignment(Alignment::Center),
         Line::from(vec![

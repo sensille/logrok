@@ -77,10 +77,10 @@
 [x] display shorter match over longer match
 [x] fiter "nothing to display", don't change mode
 [x] clog to file
-[ ] set indent column
+[x] set indent column
 
 
-order: overlong lines, undo, config file, save state, more colors, tokens
+order: undo, help, config file, save state, more colors, tokens
 
 Description:
 you have millions and millions of debug log lines, with the traces of a bug buried in them.
