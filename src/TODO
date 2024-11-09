@@ -53,7 +53,8 @@
     the same line
 [x] calculate marker area for file offset from filelen
 [ ] histogram of line (too slow?)
-[ ] scroll in help/modal or 2 column layout
+[x] scroll in help/modal or 2 column layout
+[ ] help 2 column layout
 [ ] mouse support
 [-] ?make render incremental, when a split is not yet ready, return a channel to wait on instead
     (or pass in a channel, whatever is easier)
@@ -79,9 +80,12 @@
 [x] clog to file
 [x] set indent column
 [ ] search and folded lines
+[ ] move line under cursor bug again?
+[ ] fix display of filtered first line
+[ ] binary search for timestamp
 
 
-order: help, undo, config file, save state, more colors, tokens
+order: undo, config file, save state, more colors, tokens, help
 
 Description:
 you have millions and millions of debug log lines, with the traces of a bug buried in them.

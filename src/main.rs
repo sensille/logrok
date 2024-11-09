@@ -1764,10 +1764,14 @@ impl LogrokInner {
                 .render(help_area, buf);
             let block = Block::default()
                 .padding(Padding::uniform(1))
-                .style(Style::default().fg(Color::Black).bg(Color::LightGreen));
+                .style(Style::default().fg(Color::Black).bg(Color::LightGreen))
+                .title_bottom(self.help.bottom.clone());
             let block_inner = block.inner(help_area);
             block.render(help_area, buf);
             let mut lines = self.help.help.iter().map(|x| x.clone()).collect::<Vec<_>>();
+            if lines.len() - self.help_first_line < block_inner.height as usize {
+                self.help_first_line = lines.len() - block_inner.height as usize;
+            }
             lines.drain(0..self.help_first_line);
             Paragraph::new(lines)
                 .render(block_inner, buf);
@@ -1904,6 +1908,7 @@ struct Help {
     help: Vec<Line<'static>>,
     lines: usize,
     columns: usize,
+    bottom: Line<'static>,
 }
 
 fn build_help() -> Help {
@@ -2072,6 +2077,13 @@ fn build_help() -> Help {
             Span::styled("^H", key),
             Span::styled(": toggle display of this help", text)]),
     ];
+    let bottom = Line::from(vec![
+            Span::styled("j", key), sep.clone(),
+            Span::styled("k", key),
+            Span::styled(": scroll ", text),
+            Span::styled("q", key),
+            Span::styled(": close help", text),
+    ]).alignment(Alignment::Center);
     let mut columns = 0;
     for line in &help {
         let mut len = 0;
@@ -2084,6 +2096,7 @@ fn build_help() -> Help {
         lines: help.len(),
         help,
         columns,
+        bottom,
     }
 }
 
