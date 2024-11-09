@@ -263,6 +263,9 @@ impl LogrokInner {
                     self.move_cursor(0, -1);
                 }
             }
+            if cnt > 0 {
+                return true;
+            }
             let cnt = match key_event.code {
                 KeyCode::Char('y') => 1,
                 KeyCode::Char('u') => area_height / 2,
@@ -277,7 +280,13 @@ impl LogrokInner {
                     self.move_cursor(0, 1);
                 }
             }
-            true
+            if cnt > 0 {
+                return true;
+            }
+            match key_event.code {
+                KeyCode::Char('r') => self.redo(),
+                _ => false,
+            }
         } else if key_event.modifiers.contains(KeyModifiers::ALT) {
             let area_height = self.area_height;
             let cnt = match key_event.code {
@@ -857,6 +866,10 @@ impl LogrokInner {
         }
 
         true
+    }
+
+    fn redo(&mut self) -> bool {
+        false
     }
 
     fn mark(&mut self, match_type: MatchType) -> bool {
@@ -1994,6 +2007,7 @@ fn build_help() -> Help {
            i: set indent column
 
            Various
+           u/^R: undo/redo
            q: quit
            ^H: toggle display of this help
         */
@@ -2115,6 +2129,9 @@ fn build_help() -> Help {
             Span::styled(": set indent column", text)]),
         Line::from(vec![]),
         Line::from(vec![Span::styled("Various", heading)]).alignment(Alignment::Center),
+        Line::from(vec![
+            Span::styled("u", key),
+            Span::styled(": undo", text)]),
         Line::from(vec![
             Span::styled("q", key),
             Span::styled(": quit", text)]),
