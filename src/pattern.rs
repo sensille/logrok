@@ -61,7 +61,7 @@ pub enum PatternMode {
     Search,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pattern {
     pub pattern: String,
     pub style: MarkStyle,
@@ -70,7 +70,7 @@ pub struct Pattern {
     re: Regex,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PatternSet {
     pub default_style: MarkStyle,
     patterns: BTreeMap<PatternId, Pattern>,

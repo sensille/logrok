@@ -142,6 +142,12 @@ enum Focus {
 }
 
 #[derive(Debug)]
+enum Undo {
+    Pattern((PatternMode, PatternSet)),
+    TagHide((LineId, PatternMode)),
+}
+
+#[derive(Debug)]
 struct LogrokInner {
     cursor_x: i16,
     cursor_y: i16,
@@ -170,6 +176,7 @@ struct LogrokInner {
     indent_chars: u16,
     help_first_line: usize,
     help: Help,
+    undo_stack: Vec<Undo>,
     // the fields below are rebuilt on each render
     plines: Vec<ProcessedLine>,
     line_indexes: Vec<LineIndex>,
@@ -191,6 +198,12 @@ struct LineIndex {
 }
 
 impl LogrokInner {
+    fn undo_push_pattern(&mut self, mode: PatternMode) {
+        let p = self.patterns.clone();
+        lD3!(MA, "push pattern to undo stack: {:?}", p);
+        self.undo_stack.push(Undo::Pattern((mode, p)));
+    }
+
     fn update_patterns(&mut self, mode: PatternMode) {
         match mode {
             PatternMode::Tagging => self.lines.update_patterns(SearchType::Tag, &self.patterns),
@@ -327,6 +340,7 @@ impl LogrokInner {
                 KeyCode::Char('>') => self.mark_extend(false, Direction::Backward),
                 KeyCode::Char('x') => self.tag_hide(true, PatternMode::Hiding),
                 KeyCode::Char('X') => self.tag_hide(false, PatternMode::Hiding),
+                KeyCode::Char('u') => self.undo(),
                 // todo: fast movement with shift
                 KeyCode::Left => self.move_cursor(-1, 0),
                 KeyCode::Right => self.move_cursor(1, 0),
@@ -772,6 +786,7 @@ impl LogrokInner {
                     }
                     let (id, _) = matches[0];
                     let mode = self.patterns.get(id).mode;
+                    self.undo_push_pattern(mode);
                     let (new_mode, new_variant) = if mode == PatternMode::Marking {
                         if patmode == PatternMode::Tagging {
                             (PatternMode::Tagging, MarkType::Tag)
@@ -812,8 +827,34 @@ impl LogrokInner {
             PatternMode::Hiding => self.lines.toggle_hide(line_id),
             _ => panic!("unexpected pattern mode {:?}", patmode),
         }
+        self.undo_stack.push(Undo::TagHide((line_id, patmode)));
 
         self.move_line_under_cursor(line_id, line_part);
+
+        true
+    }
+
+    fn undo(&mut self) -> bool {
+        let Some(undo) = self.undo_stack.pop() else {
+            lD3!(MA, "undo stack empty");
+            return false;
+        };
+
+        match undo {
+            Undo::Pattern((mode, p)) => {
+                lD3!(MA, "undo pattern: {:?}", p);
+                self.patterns = p;
+                self.update_patterns(mode);
+            }
+            Undo::TagHide((line_id, mode)) => {
+                lD3!(MA, "undo tag/hide: line_id: {} mode: {:?}", line_id, mode);
+                match mode {
+                    PatternMode::Tagging => self.lines.toggle_tag(line_id),
+                    PatternMode::Hiding => self.lines.toggle_hide(line_id),
+                    _ => panic!("unexpected pattern mode {:?}", mode),
+                }
+            }
+        }
 
         true
     }
@@ -833,6 +874,7 @@ impl LogrokInner {
             if let Some(&(id, _)) = matches.last() {
                 // convert search to mark
                 if self.patterns.get(id).mode == PatternMode::Search {
+                    self.undo_push_pattern(PatternMode::Search);
                     // give it a new color
                     let match_index = self.mark_style.index;
                     self.mark_style.cycle_forward();
@@ -847,6 +889,7 @@ impl LogrokInner {
                     }
                     return true;
                 }
+                self.undo_push_pattern(self.patterns.get(id).mode);
                 self.remove_pattern(id);
                 let line_id = self.plines[line_ix].line_id;
                 self.move_line_under_cursor(line_id, line_part);
@@ -877,6 +920,7 @@ impl LogrokInner {
         lD1!(MA, "mark: pattern: {}", pattern);
         let style = self.mark_style.get(MarkType::Mark);
         self.mark_style.cycle_forward();
+        self.undo_push_pattern(PatternMode::Marking);
         self.add_pattern(&pattern, match_type, style, PatternMode::Marking);
 
         true
@@ -1119,6 +1163,7 @@ impl LogrokInner {
         } else {
             // if we can't find a line, stay in previous mode
             self.display_mode = old_mode;
+            self.undo_stack.pop();
             return true;
         };
 
@@ -2175,6 +2220,7 @@ fn main() -> Result<()> {
             overlong_fold: HashMap::new(),
             help_first_line: 0,
             help: build_help(),
+            undo_stack: Vec::new(),
             input_area: Rect::default(),
             input_content: Vec::new(),
         })),
