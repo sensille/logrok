@@ -83,6 +83,7 @@
 [ ] move line under cursor bug again?
 [ ] fix display of filtered first line
 [ ] binary search for timestamp
+[ ] tag lines to always stay in view port (top/bottom, depending on cursor position)
 
 
 order: undo, config file, save state, more colors, tokens, help
