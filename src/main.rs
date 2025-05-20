@@ -2173,16 +2173,11 @@ struct Cli {
     #[arg(short='o', long)]
     output: Option<String>,
 
-    #[arg(trailing_var_arg = true, allow_hyphen_values = false, hide = true)]
-    files: Vec<String>,
+    file: String,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.files.len() != 1 {
-        return Err(anyhow::anyhow!("Expected exactly one file"));
-    }
-
     let mut facade = FacadeVariant::None;
     let mut level = Level::Info;
     if let Some(o) = &cli.output {
@@ -2203,7 +2198,7 @@ fn main() -> Result<()> {
         process::exit(1);
     }));
 
-    let filename = OsString::from(&cli.files[0]);
+    let filename = OsString::from(&cli.file);
 
     let mut terminal = ratatui::init();
     terminal.clear()?;
