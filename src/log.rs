@@ -1,21 +1,20 @@
-use clog_macros::CLog;
-use clog::prelude::*;
+use hclog_macros::HCLog;
+use hclog::ScopeKey;
 
-#[derive(CLog, Clone, Copy, Debug)]
-#[clog(
-    logmod = LogModKind::Application,
+#[derive(HCLog, Clone, Copy, Debug)]
+#[hclog(
+    scope = ScopeKey::Application,
     with_log,
 )]
-
 pub enum LogKeys {
-    #[clog(name = "main")]
+    #[hclog(name = "main")]
     MA,
-    #[clog(name = "search")]
+    #[hclog(name = "search")]
     SE,
-    #[clog(name = "split")]
+    #[hclog(name = "split")]
     SP,
-    #[clog(name = "cache")]
+    #[hclog(name = "cache")]
     CA,
-    #[clog(name = "lines")]
+    #[hclog(name = "lines")]
     LI,
 }

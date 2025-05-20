@@ -13,7 +13,6 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use std::collections::HashMap;
-use clog::prelude::*;
 use std::panic;
 use std::process;
 use std::io::Write;
@@ -21,6 +20,8 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::fmt::{self, Debug, Formatter};
+use hclog::{Level, FacadeVariant, Scope};
+use hclog::options::{self, Options};
 
 use crate::log::LogKeys::MA;
 use crate::lines::*;
@@ -120,7 +121,7 @@ impl MarkStyle {
 }
 
 #[macro_use]
-extern crate clog;
+extern crate hclog;
 
 mod log;
 mod search;
@@ -2182,17 +2183,18 @@ fn main() -> Result<()> {
         return Err(anyhow::anyhow!("Expected exactly one file"));
     }
 
-    let mut facade = None;
-    let mut level = None;
+    let mut facade = FacadeVariant::None;
+    let mut level = Level::Info;
     if let Some(o) = &cli.output {
         let logfile: &'static str = o.to_string().leak();
-        level = Some(Level::Info);
-        facade = Some(FacadeVariant::LogFile(logfile));
+        level = Level::Info;
+        facade = FacadeVariant::File(logfile.into(), false);
     }
-    log::LogKeys::clog_init("logrok", level, facade, Some(Options::default() - FUNC + TID))?;
+    log::LogKeys::init("logrok", level, facade,
+        Options::default() - options::FUNC + options::TID)?;
 
     let v: Vec<&str> = cli.log.iter().map(|s| &**s).collect();
-    CLog::set_mod_level(v)?;
+    hclog::set_mod_level(v)?;
 
     let orig_hook = panic::take_hook();
     panic::set_hook(Box::new(move |panic_info| {

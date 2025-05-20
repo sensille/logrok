@@ -10,7 +10,6 @@ use std::io::BufReader;
 use anyhow::Result;
 use regex::bytes::RegexSet;
 use bitvec::prelude::*;
-use clog::prelude::*;
 
 use crate::log::LogKeys::SE;
 

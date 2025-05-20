@@ -3,7 +3,6 @@ use anyhow::Result;
 use std::num::NonZeroUsize;
 use std::ffi::OsStr;
 use bitvec::prelude::*;
-use clog::prelude::*;
 use std::sync::Arc;
 
 use crate::log::LogKeys::LI;

@@ -11,8 +11,8 @@ anyhow = "1.0.89"
 clap = { version = "4.5.20", features = ["derive"] }
 crossterm = "0.28.1"
 ratatui = { version = "0.28.1", features = ["all-widgets"] }
-clog = { git = "ssh://git@github.com/zenzille/clog-rs.git", features = ["clog_macros"] }
-clog_macros = { git = "ssh://git@github.com/zenzille/clog-rs.git" }
+hclog = { git = "ssh://git@github.com/BobBinaryBuilder/hclog.git", features = ["hclog_macros"] }
+hclog_macros = { git = "ssh://git@github.com/BobBinaryBuilder/hclog.git" }
 num_cpus = "1.16.0"
 regex = "1.11.0"
 bitvec = "1.0.1"

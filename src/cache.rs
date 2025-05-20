@@ -7,7 +7,6 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Seek, SeekFrom};
 use std::io::Read;
-use clog::prelude::*;
 
 use crate::log::LogKeys::CA;
 use crate::search::SplitId;
