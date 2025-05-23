@@ -2111,10 +2111,10 @@ fn build_help() -> Help {
         Line::from(vec![Span::styled("Display", heading)]).alignment(Alignment::Center),
         Line::from(vec![
             Span::styled("f", key),
-            Span::styled(": toggle display of only tagged lines", text)]),
+            Span::styled(": cycle forward through display modes (all/normal/tagged/manual)", text)]),
         Line::from(vec![
-            Span::styled("F", key),
-            Span::styled(": toggle display of hidden lines", text)]),
+            Span::styled("d", key),
+            Span::styled(": cycle backward through display modes", text)]),
         Line::from(vec![
             Span::styled("@", key),
             Span::styled(": toggle display of line offsets", text)]),
