@@ -307,7 +307,8 @@ dependencies = [
 [[package]]
 name = "hclog"
 version = "0.1.0"
-source = "git+ssh://git@github.com/BobBinaryBuilder/hclog.git#c3229908fa3c202b736900caf3ccdb4be2797d52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc44d21e5ef7fae04ea71fca54a775b21af014952a018a3eeb2215e5df0e8054"
 dependencies = [
  "chrono",
  "hclog_macros",
@@ -322,7 +323,8 @@ dependencies = [
 [[package]]
 name = "hclog_macros"
 version = "0.1.0"
-source = "git+ssh://git@github.com/BobBinaryBuilder/hclog.git#c3229908fa3c202b736900caf3ccdb4be2797d52"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fcf1377a20404862c34cb4094b07e91fd27e77fc48a4acbe11aeed57058a77a1"
 dependencies = [
  "proc-macro2",
  "quote",
