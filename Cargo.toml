@@ -2,12 +2,19 @@
 name = "logrok"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Terminal-based logfile viewer that cuts to the chase."
+repository = "https://github.com/sensille/logrok"
+readme = "README.md"
+categories = ["command-line-utilities", "text-editors"]
+keywords = ["logfile", "viewer", "cli", "filter", "coloring"]
 
 [profile.dev]
 opt-level = 3
 
 [[bin]]
-name = "logrok"
+name = "lg"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.89"
