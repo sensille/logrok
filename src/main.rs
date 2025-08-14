@@ -2078,8 +2078,10 @@ fn build_help() -> Help {
             Span::styled(": toggle mark word/WORD under cursor", text)]),
         Line::from(vec![
             Span::styled(">", key), sep.clone(),
-            Span::styled("<", key),
-            Span::styled(": extend marking to right/left", text)]),
+            Span::styled("<", key), sep.clone(),
+            Span::styled(",", key), sep.clone(),
+            Span::styled(".", key),
+            Span::styled(": extend/shrink marking at right/left", text)]),
         Line::from(vec![]),
         Line::from(vec![Span::styled("Tagging/Hiding", heading)]).alignment(Alignment::Center),
         Line::from(vec![
@@ -2087,8 +2089,8 @@ fn build_help() -> Help {
             Span::styled("x", key),
             Span::styled(": toggle tag/hide match under cursor", text)]),
         Line::from(vec![
-            Span::styled("t", key), sep.clone(),
-            Span::styled("x", key),
+            Span::styled("T", key), sep.clone(),
+            Span::styled("X", key),
             Span::styled(": toggle tag/hide full line", text)]),
         Line::from(vec![
             Span::styled("c", key), sep.clone(),
@@ -2202,7 +2204,7 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     terminal.clear()?;
-    let indent = vec![" "; 79].join("");
+    let indent = vec![" "; 2].join("");
     let mark_style = MarkStyle::new();
     let app_result = Logrok {
         inner: Arc::new(Mutex::new(LogrokInner {

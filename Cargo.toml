@@ -2,7 +2,7 @@
 name = "logrok"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT"
 description = "Terminal-based logfile viewer that cuts to the chase."
 repository = "https://github.com/sensille/logrok"
 readme = "README.md"
