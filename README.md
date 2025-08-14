@@ -1,8 +1,10 @@
 # Logrok
 
-## Overview
-Logrok is a command-line tool to view large logfiles. It helps in finding
-relevant lines quickly and filtering the others.
+## What it does
+You have millions and millions of debug log lines, with the traces of a bug
+buried in them.
+The goal is to quickly find relevant lines to the problem at hand and to
+reduce the display to only those lines while highlighting relevant items.
 
 Main features include
 - mark and color keywords
