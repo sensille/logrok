@@ -505,6 +505,9 @@ impl LogrokInner {
         } else {
             let parts = self.line_parts(pline, self.area_width) as usize;
             // set pos to non-indent part of the line
+            if parts == 1 {
+                return false;
+            }
             if line_part == parts - 1 && self.cursor_x >= self.indent_chars as i16 {
                 if direction == Direction::Forward {
                     return false;
@@ -1216,6 +1219,9 @@ impl LogrokInner {
 
     fn match_has_mode(&self, pline: &ProcessedLine, pos: usize, mode: PatternMode) -> bool
     {
+        if pos >= pline.chars.len() {
+            return false;
+        }
         if let Some(ref matches) = pline.chars[pos].matches {
             for &(id, _) in matches {
                 if self.patterns.get(id).mode == mode {
@@ -1229,6 +1235,9 @@ impl LogrokInner {
 
     fn match_get_search_ix(&self, pline: &ProcessedLine, pos: usize) -> Option<usize>
     {
+        if pos >= pline.chars.len() {
+            return None;
+        }
         if let Some(ref matches) = pline.chars[pos].matches {
             for &(id, ix) in matches {
                 if self.patterns.get(id).mode == PatternMode::Search {
@@ -1241,6 +1250,9 @@ impl LogrokInner {
     }
 
     fn match_has_search_ix(&self, pline: &ProcessedLine, pos: usize, wanted_ix: usize) -> bool {
+        if pos >= pline.chars.len() {
+            return false;
+        }
         if let Some(ref matches) = pline.chars[pos].matches {
             for &(_, ix) in matches {
                 if ix == wanted_ix {
@@ -1326,7 +1338,7 @@ impl LogrokInner {
         let pos = if let Some(pos) = pos {
             pos
         } else if part == 0 {
-            0
+            self.plines[ix].chars.len() - 1
         } else {
             self.area_width as usize +
                 (part - 1) * (self.area_width as usize - self.indent_chars as usize)
