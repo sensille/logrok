@@ -1633,13 +1633,16 @@ impl LogrokInner {
         'a: for (i, pline) in self.plines.iter().enumerate() {
             let mut ix = 0;
             let mut broken_into = 0;
-            while ix < pline.chars.len() {
+            while ix <= pline.chars.len() {
                 let max_len = if ix == 0 {
                     log_area.width as usize
                 } else {
                     (log_area.width - self.indent_chars) as usize
                 };
                 let len = max_len.min(pline.chars.len() - ix);
+                if broken_into != 0 && len == 0 {
+                    break;
+                }
                 if skip > 0 {
                     skip -= 1;
                 } else {
@@ -2172,6 +2175,7 @@ struct Cli {
     #[arg(short='l', long)]
     log: Vec<String>,
 
+    /// Output file for logging, if not given, no logs are written
     #[arg(short='o', long)]
     output: Option<String>,
 
