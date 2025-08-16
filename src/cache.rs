@@ -145,7 +145,10 @@ impl SplitCache {
                     line_ends.push(start + line_end + 1);
                     start += line_end + 1;
                 }
-                assert_eq!(line_ends.last(), Some(&buflen));
+                // last split in a file that does not end with a newline
+                if line_ends.last() < Some(&buflen) {
+                    line_ends.push(buflen);
+                }
 
                 lD5!(CA, "split read done");
 
