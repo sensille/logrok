@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::ffi::OsStr;
 use bitvec::prelude::*;
 use std::sync::Arc;
+use serde::{Serialize, Deserialize};
 
 use crate::log::LogKeys::LI;
 use crate::cache::*;
@@ -12,7 +13,7 @@ use crate::search::*;
 
 pub type LineId = u64;
 
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum DisplayMode {
     All,
     Normal,
@@ -30,8 +31,8 @@ pub struct ProcessedLine {
 
 #[derive(Debug)]
 pub struct Lines {
-    tagged_lines: BTreeSet<LineId>,
-    hidden_lines: BTreeSet<LineId>,
+    pub tagged_lines: BTreeSet<LineId>,
+    pub hidden_lines: BTreeSet<LineId>,
     all_hidden_splits: BitVec<usize, Lsb0>,
     split_cache: SplitCache,
     _hidden_seq: usize,

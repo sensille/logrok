@@ -1,5 +1,5 @@
 use std::io;
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::Parser;
 use crossterm::event::{self, KeyEvent, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
@@ -16,19 +16,21 @@ use std::collections::HashMap;
 use std::panic;
 use std::process;
 use std::io::Write;
+use std::path::Path;
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::fmt::{self, Debug, Formatter};
 use hclog::{Level, FacadeVariant, Scope};
 use hclog::options::{self, Options};
+use serde::{Serialize, Deserialize};
 
 use crate::log::LogKeys::MA;
 use crate::lines::*;
 use crate::pattern::*;
 use crate::cache::SearchType;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum MarkType {
     None = 0,
     Mark = 1,
@@ -129,7 +131,7 @@ mod pattern;
 mod cache;
 mod lines;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum Direction {
     Forward,
     Backward,
@@ -158,6 +160,7 @@ struct LogrokInner {
     first_line: LineId,
     line_offset: usize,
     exit: bool,
+    save_state: bool,
     patterns: PatternSet,
     lines: Lines,
     display_mode: DisplayMode,
@@ -241,7 +244,8 @@ impl LogrokInner {
         } else {
             match key_event.code {
                 KeyCode::Char('@') => self.offsets(),
-                KeyCode::Char('q') => self.exit(),
+                KeyCode::Char('q') => self.exit(true),
+                KeyCode::Char('Q') => self.exit(false),
                 _ => false,
             }
         }
@@ -546,8 +550,9 @@ impl LogrokInner {
         false
     }
 
-    fn exit(&mut self) -> bool {
+    fn exit(&mut self, save_state: bool) -> bool {
         self.exit = true;
+        self.save_state = save_state;
         false
     }
 
@@ -1720,7 +1725,9 @@ impl LogrokInner {
                 } else {
                     spans.push(Span::raw("F "));
                 }
-            };
+            } else {
+                spans.push(Span::raw("  "));
+            }
             if self.display_offset && index.line_part == 0 {
                 let line_id_len = self.display_offset_len;
                 spans.push(Span::raw(format!("{:line_id_len$} ", line.line_id)).green());
@@ -1853,6 +1860,36 @@ impl LogrokInner {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SavedPattern {
+    pattern_id: PatternId,
+    pattern: String,
+    mark_type: MarkType,
+    mark_index: isize,
+    pub mode: PatternMode,
+    pub match_type: MatchType,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SavedState {
+    cursor_x: i16,
+    cursor_y: i16,
+    first_line: LineId,
+    line_offset: usize,
+    patterns: Vec<SavedPattern>,
+    tagged_lines: Vec<LineId>,
+    hidden_lines: Vec<LineId>,
+    display_mode: DisplayMode,
+    last_search: Option<PatternId>,
+    search_direction: Direction,
+    search_match_type: MatchType,
+    search_mark_style: MarkType,
+    search_mark_index: isize,
+    display_offset: bool,
+    overlong_fold: Vec<(LineId, usize, usize)>,
+    indent_chars: u16,
+}
+
 impl Logrok {
     pub fn area(terminal: &DefaultTerminal) -> Result<Rect> {
         let size = terminal.size()?;
@@ -1927,6 +1964,114 @@ impl Logrok {
             };
         };
         Ok(event)
+    }
+
+    fn state_file_name(name: &OsString) -> OsString {
+        let path = Path::new(name);
+        let mut statefile = OsString::from(".");
+        statefile.push(OsString::from(path.file_name().unwrap()));
+        statefile.push(".logrok");
+        let path = path.with_file_name(statefile);
+
+        path.into_os_string()
+    }
+
+    fn read_state(&mut self, name: &OsString) -> Result<()> {
+        let fname = Self::state_file_name(name);
+        let content = match std::fs::read(&fname) {
+            Ok(c) => c,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                lD1!(MA, "no state file found");
+                return Ok(());
+            }
+            Err(e) => bail!("failed to read state file {:?}: {}", &fname, e.to_string()),
+        };
+        let state: SavedState = match toml::from_slice(&content) {
+            Ok(s) => s,
+            Err(_) => bail!("failed to parse state file {:?}. Either remove it or start with -S",
+                &fname),
+        };
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.cursor_x = state.cursor_x;
+        inner.cursor_y = state.cursor_y;
+        inner.first_line = state.first_line;
+        inner.line_offset = state.line_offset;
+        inner.display_mode = state.display_mode;
+        inner.last_search = state.last_search;
+        inner.search_direction = state.search_direction;
+        inner.search_match_type = state.search_match_type;
+        inner.mark_style.variant = state.search_mark_style;
+        inner.mark_style.index = state.search_mark_index;
+        inner.indent_chars = state.indent_chars;
+        inner.indent = " ".repeat(inner.indent_chars as usize);
+        inner.overlong_fold = state.overlong_fold.iter()
+            .map(|(id, lines, first)| (*id, (*lines, *first)))
+            .collect::<HashMap<_, _>>();
+        for &id in &state.tagged_lines {
+            inner.lines.toggle_tag(id);
+        }
+        for &id in &state.hidden_lines {
+            inner.lines.toggle_hide(id);
+        }
+        if state.display_offset {
+            inner.offsets();
+        }
+        for p in state.patterns {
+            let style = MarkStyle {
+                variant: p.mark_type,
+                index: p.mark_index,
+                styles: inner.mark_style.styles.clone(),
+            };
+            let pattern_id = inner.patterns.add(&p.pattern, p.match_type, style, p.mode);
+            if let Some(search_id) = inner.last_search {
+                if p.pattern_id == search_id {
+                    inner.last_search = Some(pattern_id);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn save_state(&mut self, name: &OsString) -> Result<()> {
+        let inner = self.inner.lock().unwrap();
+        if !inner.save_state {
+            return Ok(());
+        }
+        let mut patterns = Vec::new();
+        for (id, p) in &inner.patterns.patterns {
+            patterns.push(SavedPattern {
+                pattern_id: *id,
+                pattern: p.pattern.clone(),
+                mark_type: p.style.variant,
+                mark_index: p.style.index,
+                mode: p.mode,
+                match_type: p.match_type,
+            });
+        }
+        let state = SavedState {
+            cursor_x: inner.cursor_x,
+            cursor_y: inner.cursor_y,
+            first_line: inner.first_line,
+            line_offset: inner.line_offset,
+            patterns,
+            tagged_lines: inner.lines.tagged_lines.iter().map(|x| *x).collect::<Vec<_>>(),
+            hidden_lines: inner.lines.hidden_lines.iter().map(|x| *x).collect::<Vec<_>>(),
+            display_mode: inner.display_mode,
+            last_search: inner.last_search,
+            search_direction: inner.search_direction,
+            search_match_type: inner.search_match_type,
+            search_mark_style: inner.mark_style.variant,
+            search_mark_index: inner.mark_style.index,
+            display_offset: inner.display_offset,
+            overlong_fold: inner.overlong_fold.iter()
+                .map(|(id, (lines, first))| (*id, *lines, *first))
+                .collect::<Vec<_>>(),
+            indent_chars: inner.indent_chars,
+        };
+        std::fs::write(Self::state_file_name(name), toml::to_string(&state)?)?;
+        Ok(())
     }
 }
 
@@ -2136,7 +2281,7 @@ fn build_help() -> Help {
             Span::styled("@", key),
             Span::styled(": toggle display of line offsets", text)]),
         Line::from(vec![
-            Span::styled("o", key),
+            Span::styled("F", key),
             Span::styled(": fold current (overlong) line", text)]),
         Line::from(vec![
             Span::styled("+", key), sep.clone(),
@@ -2152,7 +2297,10 @@ fn build_help() -> Help {
             Span::styled(": undo", text)]),
         Line::from(vec![
             Span::styled("q", key),
-            Span::styled(": quit", text)]),
+            Span::styled(": quit and save state", text)]),
+        Line::from(vec![
+            Span::styled("Q", key),
+            Span::styled(": quit without saving state", text)]),
         Line::from(vec![
             Span::styled("^H", key),
             Span::styled(": toggle display of this help", text)]),
@@ -2191,6 +2339,9 @@ struct Cli {
     #[arg(short='o', long)]
     output: Option<String>,
 
+    #[arg(short='S', long)]
+    ignore_state_file: bool,
+
     file: String,
 }
 
@@ -2223,6 +2374,7 @@ fn run_logrok() -> Result<()> {
     let mut logrok = Logrok {
         inner: Arc::new(Mutex::new(LogrokInner {
             exit: false,
+            save_state: false,
             cursor_x: 0,
             cursor_y: 0,
             area_width: 1,
@@ -2255,10 +2407,18 @@ fn run_logrok() -> Result<()> {
             input_content: Vec::new(),
         })),
     };
+    if !cli.ignore_state_file {
+        logrok.read_state(&filename)?;
+    }
 
     let mut terminal = ratatui::init();
     terminal.clear()?;
     let app_result = logrok.run(&mut terminal);
+
+    if app_result.is_ok() {
+        // save state
+        logrok.save_state(&filename)?;
+    }
 
     // move to sane position in case the terminal does not have an altscreen
     let size = terminal.size()?;
@@ -2269,9 +2429,9 @@ fn run_logrok() -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let err = run_logrok();
+    let app_result = run_logrok();
 
     ratatui::restore();
 
-    err
+    app_result
 }

@@ -12,7 +12,7 @@
 [x] ? search backwards
 [x] reduce mark selection? maybe ,.<>? or '>'=extend mark to right, '<' reduce mark
 [x] undo
-[ ] save state to disk
+[x] save state to disk
 [ ] config file
 [x] navigation wWbB (only within line)
 [x] navigation 0$
@@ -86,4 +86,4 @@
 [ ] tag lines to always stay in view port (top/bottom, depending on cursor position)
 
 
-order: config file, save state, more colors, tokens, help
+order: config file, more colors, tokens, help

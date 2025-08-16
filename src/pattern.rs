@@ -2,6 +2,7 @@ use regex::bytes::RegexSet;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use regex::Regex;
+use serde::{Serialize, Deserialize};
 
 use crate::MarkStyle;
 
@@ -14,7 +15,7 @@ pub struct StyledChar {
     pub style: MarkStyle,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum MatchType {
     BigWord,
     SmallWord,
@@ -53,7 +54,7 @@ impl MatchType {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, Serialize, Deserialize)]
 pub enum PatternMode {
     Tagging,
     Hiding,
@@ -73,7 +74,7 @@ pub struct Pattern {
 #[derive(Debug, Clone)]
 pub struct PatternSet {
     pub default_style: MarkStyle,
-    patterns: BTreeMap<PatternId, Pattern>,
+    pub patterns: BTreeMap<PatternId, Pattern>,
     sort_by_len: Vec<PatternId>,
     pub seq: PatternId,
     pub tagged_re: RegexSet,
