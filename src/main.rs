@@ -2194,7 +2194,7 @@ struct Cli {
     file: String,
 }
 
-fn main() -> Result<()> {
+fn run_logrok() -> Result<()> {
     let cli = Cli::parse();
     let mut facade = FacadeVariant::None;
     let mut level = Level::Info;
@@ -2218,11 +2218,9 @@ fn main() -> Result<()> {
 
     let filename = OsString::from(&cli.file);
 
-    let mut terminal = ratatui::init();
-    terminal.clear()?;
     let indent = vec![" "; 2].join("");
     let mark_style = MarkStyle::new();
-    let app_result = Logrok {
+    let mut logrok = Logrok {
         inner: Arc::new(Mutex::new(LogrokInner {
             exit: false,
             cursor_x: 0,
@@ -2256,12 +2254,24 @@ fn main() -> Result<()> {
             input_area: Rect::default(),
             input_content: Vec::new(),
         })),
-    }.run(&mut terminal);
+    };
+
+    let mut terminal = ratatui::init();
+    terminal.clear()?;
+    let app_result = logrok.run(&mut terminal);
+
     // move to sane position in case the terminal does not have an altscreen
     let size = terminal.size()?;
     terminal.set_cursor_position((0, size.height - 1))?;
     terminal.show_cursor()?;
     println!("");
-    ratatui::restore();
     app_result
+}
+
+fn main() -> Result<()> {
+    let err = run_logrok();
+
+    ratatui::restore();
+
+    err
 }
