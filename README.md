@@ -15,7 +15,7 @@ Main features include
 - folding long lines
 - vim motions
 
-Hit Ctrl-h to see the help screen.
+Hit `Ctrl-h` to see the help screen.
 
 ## Installation
 Type `cargo install logrok` to install the latest version. It will be
