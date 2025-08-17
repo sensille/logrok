@@ -1,6 +1,6 @@
 [package]
 name = "logrok"
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Terminal-based logfile viewer that cuts to the chase."
