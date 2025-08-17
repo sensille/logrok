@@ -29,6 +29,7 @@ use crate::log::LogKeys::MA;
 use crate::lines::*;
 use crate::pattern::*;
 use crate::cache::SearchType;
+use crate::qhash::QHash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum MarkType {
@@ -130,6 +131,7 @@ mod search;
 mod pattern;
 mod cache;
 mod lines;
+mod qhash;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 enum Direction {
@@ -1888,6 +1890,7 @@ struct SavedState {
     display_offset: bool,
     overlong_fold: Vec<(LineId, usize, usize)>,
     indent_chars: u16,
+    qhash: QHash,
 }
 
 impl Logrok {
@@ -1976,13 +1979,13 @@ impl Logrok {
         path.into_os_string()
     }
 
-    fn read_state(&mut self, name: &OsString) -> Result<()> {
+    fn read_state(&mut self, name: &OsString) -> Result<Option<QHash>> {
         let fname = Self::state_file_name(name);
         let content = match std::fs::read(&fname) {
             Ok(c) => c,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 lD1!(MA, "no state file found");
-                return Ok(());
+                return Ok(None);
             }
             Err(e) => bail!("failed to read state file {:?}: {}", &fname, e.to_string()),
         };
@@ -1992,11 +1995,18 @@ impl Logrok {
                 &fname),
         };
 
+        // when the file has changed up to the old filesize, don't load the full state.
+        // discard all fields that refer to a LineId
+        let unchanged = qhash::check(name, &state.qhash);
+        if unchanged {
+            lD1!(MA, "loading state from file {:?}", &fname);
+        } else {
+            lD1!(MA, "file changed from state file, not loading full state");
+        }
+
         let mut inner = self.inner.lock().unwrap();
         inner.cursor_x = state.cursor_x;
         inner.cursor_y = state.cursor_y;
-        inner.first_line = state.first_line;
-        inner.line_offset = state.line_offset;
         inner.display_mode = state.display_mode;
         inner.last_search = state.last_search;
         inner.search_direction = state.search_direction;
@@ -2005,14 +2015,18 @@ impl Logrok {
         inner.mark_style.index = state.search_mark_index;
         inner.indent_chars = state.indent_chars;
         inner.indent = " ".repeat(inner.indent_chars as usize);
-        inner.overlong_fold = state.overlong_fold.iter()
-            .map(|(id, lines, first)| (*id, (*lines, *first)))
-            .collect::<HashMap<_, _>>();
-        for &id in &state.tagged_lines {
-            inner.lines.toggle_tag(id);
-        }
-        for &id in &state.hidden_lines {
-            inner.lines.toggle_hide(id);
+        if unchanged {
+            inner.overlong_fold = state.overlong_fold.iter()
+                .map(|(id, lines, first)| (*id, (*lines, *first)))
+                .collect::<HashMap<_, _>>();
+            inner.first_line = state.first_line;
+            inner.line_offset = state.line_offset;
+            for &id in &state.tagged_lines {
+                inner.lines.toggle_tag(id);
+            }
+            for &id in &state.hidden_lines {
+                inner.lines.toggle_hide(id);
+            }
         }
         if state.display_offset {
             inner.offsets();
@@ -2031,10 +2045,14 @@ impl Logrok {
             }
         }
 
-        Ok(())
+        if unchanged {
+            Ok(Some(state.qhash))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn save_state(&mut self, name: &OsString) -> Result<()> {
+    fn save_state(&mut self, name: &OsString, qhash: QHash) -> Result<()> {
         let inner = self.inner.lock().unwrap();
         if !inner.save_state {
             return Ok(());
@@ -2051,6 +2069,7 @@ impl Logrok {
             });
         }
         let state = SavedState {
+            qhash,
             cursor_x: inner.cursor_x,
             cursor_y: inner.cursor_y,
             first_line: inner.first_line,
@@ -2407,8 +2426,15 @@ fn run_logrok() -> Result<()> {
             input_content: Vec::new(),
         })),
     };
+    let mut old_qhash = None;
     if !cli.ignore_state_file {
-        logrok.read_state(&filename)?;
+        old_qhash = logrok.read_state(&filename)?;
+    }
+    let qhash = qhash::generate(&filename, &old_qhash)?;
+
+    if qhash.filesize == 0 {
+        println!("empty file");
+        return Ok(());
     }
 
     let mut terminal = ratatui::init();
@@ -2417,7 +2443,7 @@ fn run_logrok() -> Result<()> {
 
     if app_result.is_ok() {
         // save state
-        logrok.save_state(&filename)?;
+        logrok.save_state(&filename, qhash)?;
     }
 
     // move to sane position in case the terminal does not have an altscreen
